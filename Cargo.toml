@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = "0.7"
-reqwest = { version = "0.12", features = ["stream"] }
+axum = "0.8.9"
+reqwest = { version = "0.13.4", features = ["stream"] }
 tokio = { version = "1", features = ["full"] }
-clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
+dotenvy = "0.15"
+clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"
 http-body = "1"
 http-body-util = "0.1"

@@ -7,3 +7,6 @@ target/
 
 # OS
 .DS_Store
+
+# Local env (keep .env.example tracked)
+.env

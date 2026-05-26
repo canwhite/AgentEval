@@ -203,16 +203,123 @@ let axum_body = Body::new(StreamBody::new(frame_stream));
 
 ---
 
+## 怎么用
+
+### 1. 配置
+
+三种方式，自由混用。优先级：**CLI 参数 > 环境变量 > 默认值**。
+
+**方式 A：`.env` 文件（无需每次敲参数）**
+
+```bash
+cp .env.example .env
+```
+
+```bash
+# .env
+AGENTEVAL_UPSTREAM=https://api.anthropic.com
+AGENTEVAL_PORT=57633
+# AGENTEVAL_VERBOSE=1
+```
+
+**方式 B：环境变量（shell export）**
+
+```bash
+export AGENTEVAL_UPSTREAM=https://api.openai.com
+```
+
+**方式 C：CLI 参数（一次性覆盖）**
+
+```bash
+cargo run -- --upstream https://api.openai.com --port 8080 --verbose
+```
+
+完整的参数列表：
+
+```
+$ cargo run -- --help
+
+Usage: AgentEval [OPTIONS]
+
+Options:
+  -u, --upstream <UPSTREAM>  上游 API 地址    [env: AGENTEVAL_UPSTREAM=]  [default: https://api.anthropic.com]
+  -p, --port <PORT>          本地监听端口      [env: AGENTEVAL_PORT=]      [default: 57633]
+      --log-dir <LOG_DIR>    日志存放目录      [env: AGENTEVAL_LOG_DIR=]   [default: ~/.agenteval/logs]
+  -v, --verbose              详细模式          [env: AGENTEVAL_VERBOSE=]
+  -h, --help                 打印帮助
+```
+
+### 2. 常见组合
+
+```bash
+# 日常使用：.env 配好 upstream，直接跑
+cargo run
+
+# 临时抓 OpenAI：CLI 覆盖 upstream
+cargo run -- --upstream https://api.openai.com
+
+# 抓 Kimi（带路径前缀）
+cargo run -- --upstream https://api.moonshot.cn/anthropic
+
+# 详细模式：打印每个请求的 JSON body
+cargo run -- --verbose
+
+# 自定义端口 + 详细模式
+cargo run -- --port 6789 --verbose
+
+# 纯环境变量（不依赖 .env）
+AGENTEVAL_UPSTREAM=https://api.deepseek.com cargo run
+```
+
+### 3. 让客户端"认错门"
+
+```bash
+# Claude Code
+ANTHROPIC_BASE_URL=http://127.0.0.1:57633 claude
+
+# OpenAI / Codex
+OPENAI_BASE_URL=http://127.0.0.1:57633 codex
+
+# 或 export 到当前 shell
+export ANTHROPIC_BASE_URL=http://127.0.0.1:57633
+claude
+```
+
+客户端把所有请求发给 `127.0.0.1:57633`，代理再转发到配置的上游。
+
+### 4. 看日志
+
+```bash
+ls ~/.agenteval/logs/
+# 0001.json  0002.json  0003.json  ...
+
+cat ~/.agenteval/logs/0001.json | python3 -m json.tool
+```
+
+每条记录结构见上方「第 6 步：写入审计日志」。
+
+---
+
 ## 项目结构
 
 ```
 AgentEval/
-├── Cargo.toml          # 依赖：axum, reqwest, tokio, clap, serde_json
+├── .env.example         # 环境变量模板（提交 git）
+├── .env                 # 你的本地配置（gitignore）
+├── Cargo.toml           # 依赖：axum, reqwest, tokio, serde_json, dotenvy, clap
 ├── src/
-│   └── main.rs         # 全部实现在一个文件（~250 行）
+│   ├── main.rs          # 入口：加载 .env，启动 server（~30 行）
+│   ├── config.rs        # Config::load()，读环境变量
+│   └── proxy.rs         # proxy::handler() + 辅助函数
 └── docs/
-    └── implementation.md  # 你正在看的这个文件
+    └── proxy.md         # 你正在看的这个文件
 ```
+
+| 文件 | 职责 |
+|---|---|
+| `config.rs` | `Config::load()` → `dotenvy::dotenv()` + `clap::Parser`，从 `.env` / 环境变量 / CLI 读配置 |
+| `proxy.rs` | `proxy::handler()` → 接收请求→清洗 header→转发上游→流式透传→写日志 |
+| `main.rs` | `main()` → `Config::load()` + `axum::serve()` |
 
 ## 关键依赖选型
 
@@ -222,7 +329,23 @@ AgentEval/
 | HTTPS 客户端 | reqwest 0.12 | 系统 TLS 支持，stream body 原生支持 |
 | 异步运行时 | tokio | axum 和 reqwest 的共同运行时 |
 | body 流式 | http-body-util::StreamBody | hyper 1.0 的 Frame 模型，零拷贝 chunk 转发 |
-| CLI | clap 4 | Rust 社区标准 CLI 框架 |
+| 配置 | dotenvy + clap | dotenvy 加载 `.env` → 环境变量 → clap 自动绑定，CLI 优先 |
+
+## 配置优先级
+
+```
+CLI 参数 > 环境变量 (AGENTEVAL_*) > .env 文件 > 默认值
+    │              │                      │           │
+    │   cargo run ─│─ --upstream https://x.com --verbose
+    │              │                      │           │
+    │   export AGENTEVAL_UPSTREAM=https://x.com      │
+    │              │                      │           │
+    │              │    .env 中写的值      │           │
+    │              │                      │           │
+    │              │              代码中的 default_value_t
+```
+
+clap 的 `#[arg(env = "...")]` 让每个参数自动从同名环境变量取值，dotenvy 在 clap 解析前把 `.env` 注入到进程环境。所以 `.env` 和环境变量对 clap 来说是一回事，后者覆盖前者。
 
 ## 边界情况
 
