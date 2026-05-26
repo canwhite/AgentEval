@@ -1,6 +1,16 @@
 [package]
 name = "AgentEval"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+axum = "0.7"
+reqwest = { version = "0.12", features = ["stream"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+http-body = "1"
+http-body-util = "0.1"
+futures = "0.3"
+bytes = "1"
