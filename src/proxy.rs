@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::sync::Mutex;
-use std::time::Instant; 
+use std::time::Instant;
 use axum::{
     body::Body,
     extract::State,
@@ -14,20 +14,21 @@ use reqwest::Client;
 use serde_json::Value;
 
 use crate::config::Config;
+use crate::eval::types::TurnRecord;
 
 pub struct AppState {
     pub upstream_base: String,
     pub client: Client,
-    pub trace_file: String,    // 一个 session 一个文件
-    pub trace_lock: Mutex<()>, // 串行写入
-    pub verbose: bool, //verbose 模式会打印请求体和更详细的日志，adj 冗长的
-    pub counter: std::sync::atomic::AtomicU64, // 请求计数器，生成唯一 ID
+    pub trace_file: String,
+    pub trace_lock: Mutex<()>,
+    pub verbose: bool,
+    pub counter: std::sync::atomic::AtomicU64,
+    pub eval_tx: tokio::sync::mpsc::UnboundedSender<TurnRecord>,
 }
 
 
 impl AppState {
-    pub fn new(config: &Config) -> Self {
-        //reqwest 的 Client 默认会使用系统代理设置，.no_proxy() 禁止它走代理，直接访问上游地址
+    pub fn new(config: &Config, eval_tx: tokio::sync::mpsc::UnboundedSender<TurnRecord>) -> Self {
         let client = Client::builder()
             .no_proxy()
             .build()
@@ -37,9 +38,7 @@ impl AppState {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        // 每次启动生成一个新的日志文件，文件名包含时间戳，方便区分不同 session 的日志
         let trace_file = format!("{}/session_{}.jsonl", config.log_dir, now);
-        // 创建日志目录（如果不存在）和日志文件
         std::fs::create_dir_all(&config.log_dir).expect("Failed to create log directory");
 
         Self {
@@ -49,6 +48,7 @@ impl AppState {
             trace_lock: Mutex::new(()),
             verbose: config.verbose,
             counter: std::sync::atomic::AtomicU64::new(1),
+            eval_tx,
         }
     }
 }
@@ -60,9 +60,7 @@ pub async fn handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, (StatusCode, String)> {
-    // 生成请求 ID 和记录开始时间
     let start = Instant::now();
-    // 使用原子计数器生成唯一 ID，保证在高并发情况下也不会重复
     let id = state.counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     let path_and_query = uri
@@ -135,7 +133,7 @@ pub async fn handler(
     *response.status_mut() = status;
     *response.headers_mut() = resp_headers;
 
-    // Background: accumulate full response body, then write complete trace line
+    // Background: accumulate full response body, then write trace + send to eval
     let st = state.clone();
     let method_str = method.to_string();
     let path_str = path_and_query.to_string();
@@ -149,6 +147,11 @@ pub async fn handler(
             resp_buf.extend_from_slice(&chunk);
         }
 
+        let resp_body_json = body_to_json(&resp_buf);
+        // Clone for eval before moving into entry
+        let eval_req = req_body_json.clone();
+        let eval_resp = resp_body_json.clone();
+
         let mut entry = serde_json::Map::new();
         entry.insert("id".into(), Value::Number(id.into()));
         entry.insert("ts".into(), Value::Number(timestamp_ms().into()));
@@ -159,7 +162,7 @@ pub async fn handler(
         entry.insert("request_body".into(), req_body_json);
         entry.insert("response_status".into(), Value::Number(status_u16.into()));
         entry.insert("response_headers".into(), resp_headers_val);
-        entry.insert("response_body".into(), body_to_json(&resp_buf));
+        entry.insert("response_body".into(), resp_body_json);
         entry.insert("duration_ms".into(), Value::Number(elapsed_ms.into()));
         entry.insert("streaming".into(), Value::Bool(streaming));
 
@@ -171,6 +174,17 @@ pub async fn handler(
             .unwrap();
         let line = serde_json::to_string(&Value::Object(entry)).unwrap();
         writeln!(file, "{}", line).ok();
+        drop(_guard);
+
+        // Send to eval for structured session view
+        st.eval_tx
+            .send(TurnRecord {
+                id,
+                request_body: eval_req,
+                response_body: eval_resp,
+                duration_ms: elapsed_ms,
+            })
+            .ok();
     });
 
     Ok(response)
