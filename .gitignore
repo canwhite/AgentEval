@@ -10,3 +10,6 @@ target/
 
 # Local env (keep .env.example tracked)
 .env
+
+# Proxy request logs
+logs/

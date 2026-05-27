@@ -118,9 +118,14 @@ pub async fn handler(
         );
     }
 
-    // Stream response body back
-    let frame_stream = upstream_resp.bytes_stream().map(|result| match result {
-        Ok(bytes) => Ok(Frame::data(bytes)),
+    // Stream response back, tee each chunk to a channel for logging
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+    let frame_stream = upstream_resp.bytes_stream().map(move |result| match result {
+        Ok(bytes) => {
+            tx.send(bytes.to_vec()).ok();
+            Ok(Frame::data(bytes))
+        }
         Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
     });
 
@@ -130,7 +135,18 @@ pub async fn handler(
     *response.status_mut() = status;
     *response.headers_mut() = resp_headers;
 
+    // Write initial log (no response_body yet)
     write_log(&state.log_dir, id, &log);
+
+    // Background: accumulate response chunks, update log when stream ends
+    let log_dir = state.log_dir.clone();
+    tokio::spawn(async move {
+        let mut buf = Vec::new();
+        while let Some(chunk) = rx.recv().await {
+            buf.extend_from_slice(&chunk);
+        }
+        update_log_response_body(&log_dir, id, &buf);
+    });
 
     Ok(response)
 }
@@ -176,5 +192,23 @@ fn write_log(log_dir: &str, id: u64, log: &serde_json::Map<String, Value>) {
     let path = format!("{}/{:04}.json", log_dir, id);
     if let Ok(json) = serde_json::to_string_pretty(log) {
         std::fs::write(&path, json).ok();
+    }
+}
+
+fn update_log_response_body(log_dir: &str, id: u64, body_bytes: &[u8]) {
+    let path = format!("{}/{:04}.json", log_dir, id);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut value: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("response_body".into(), body_to_json(body_bytes));
+        if let Ok(json) = serde_json::to_string_pretty(&value) {
+            std::fs::write(&path, json).ok();
+        }
     }
 }

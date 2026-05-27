@@ -9,7 +9,6 @@ reqwest = { version = "0.13.4", features = ["stream"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 dotenvy = "0.15"
-clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"
 http-body = "1"
 http-body-util = "0.1"
