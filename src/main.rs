@@ -16,6 +16,7 @@ async fn main() {
 
     let state = Arc::new(AppState::new(&config));
 
+    //创建app，所有请求都交给proxy::handler处理，并共享状态
     let app = Router::new()
         .fallback(any(proxy::handler))
         .with_state(state);

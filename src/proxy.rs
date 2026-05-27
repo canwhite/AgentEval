@@ -1,7 +1,6 @@
 use std::io::Write;
 use std::sync::Mutex;
-use std::time::Instant;
-
+use std::time::Instant; 
 use axum::{
     body::Body,
     extract::State,
@@ -21,12 +20,14 @@ pub struct AppState {
     pub client: Client,
     pub trace_file: String,    // 一个 session 一个文件
     pub trace_lock: Mutex<()>, // 串行写入
-    pub verbose: bool,
-    pub counter: std::sync::atomic::AtomicU64,
+    pub verbose: bool, //verbose 模式会打印请求体和更详细的日志，adj 冗长的
+    pub counter: std::sync::atomic::AtomicU64, // 请求计数器，生成唯一 ID
 }
+
 
 impl AppState {
     pub fn new(config: &Config) -> Self {
+        //reqwest 的 Client 默认会使用系统代理设置，.no_proxy() 禁止它走代理，直接访问上游地址
         let client = Client::builder()
             .no_proxy()
             .build()
@@ -36,7 +37,9 @@ impl AppState {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        // 每次启动生成一个新的日志文件，文件名包含时间戳，方便区分不同 session 的日志
         let trace_file = format!("{}/session_{}.jsonl", config.log_dir, now);
+        // 创建日志目录（如果不存在）和日志文件
         std::fs::create_dir_all(&config.log_dir).expect("Failed to create log directory");
 
         Self {
@@ -57,7 +60,9 @@ pub async fn handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, (StatusCode, String)> {
+    // 生成请求 ID 和记录开始时间
     let start = Instant::now();
+    // 使用原子计数器生成唯一 ID，保证在高并发情况下也不会重复
     let id = state.counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     let path_and_query = uri
