@@ -1,3 +1,5 @@
+use std::io::Write;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use axum::{
@@ -17,7 +19,8 @@ use crate::config::Config;
 pub struct AppState {
     pub upstream_base: String,
     pub client: Client,
-    pub log_dir: String,
+    pub trace_file: String,    // 一个 session 一个文件
+    pub trace_lock: Mutex<()>, // 串行写入
     pub verbose: bool,
     pub counter: std::sync::atomic::AtomicU64,
 }
@@ -29,10 +32,18 @@ impl AppState {
             .build()
             .expect("Failed to create HTTP client");
 
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let trace_file = format!("{}/session_{}.jsonl", config.log_dir, now);
+        std::fs::create_dir_all(&config.log_dir).expect("Failed to create log directory");
+
         Self {
             upstream_base: config.upstream.clone(),
             client,
-            log_dir: config.log_dir.clone(),
+            trace_file,
+            trace_lock: Mutex::new(()),
             verbose: config.verbose,
             counter: std::sync::atomic::AtomicU64::new(1),
         }
@@ -58,16 +69,6 @@ pub async fn handler(
     let streaming = is_streaming_request(&body);
     let req_body_json = body_to_json(&body);
 
-    let mut log = serde_json::Map::new();
-    log.insert("id".into(), Value::Number(id.into()));
-    log.insert("ts".into(), Value::Number(timestamp_ms().into()));
-    log.insert("method".into(), Value::String(method.to_string()));
-    log.insert("path".into(), Value::String(path_and_query.to_string()));
-    log.insert("upstream".into(), Value::String(upstream_url.clone()));
-    log.insert("request_headers".into(), headers_to_value(&headers));
-    log.insert("request_body".into(), req_body_json.clone());
-    log.insert("streaming".into(), Value::Bool(streaming));
-
     // Forward to upstream
     let mut req_builder = state.client.request(method.clone(), &upstream_url);
 
@@ -86,10 +87,6 @@ pub async fn handler(
     let upstream_resp = match req_builder.send().await {
         Ok(r) => r,
         Err(e) => {
-            let elapsed = start.elapsed();
-            log.insert("error".into(), Value::String(e.to_string()));
-            log.insert("duration_ms".into(), Value::Number((elapsed.as_millis() as u64).into()));
-            write_log(&state.log_dir, id, &log);
             eprintln!("[{:04}] upstream error: {}", id, e);
             return Err((StatusCode::BAD_GATEWAY, e.to_string()));
         }
@@ -97,12 +94,10 @@ pub async fn handler(
 
     let status = upstream_resp.status();
     let resp_headers = upstream_resp.headers().clone();
+    let resp_headers_val = headers_to_value(&resp_headers);
     let elapsed = start.elapsed();
 
-    log.insert("response_status".into(), Value::Number(status.as_u16().into()));
-    log.insert("response_headers".into(), headers_to_value(&resp_headers));
-    log.insert("duration_ms".into(), Value::Number((elapsed.as_millis() as u64).into()));
-
+    // Console output
     if state.verbose {
         println!(
             "[{:04}] {} {} -> {}  status={}  streaming={}  {}ms",
@@ -118,7 +113,7 @@ pub async fn handler(
         );
     }
 
-    // Stream response back, tee each chunk to a channel for logging
+    // Stream response back, tee chunks to channel for full-body capture
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
     let frame_stream = upstream_resp.bytes_stream().map(move |result| match result {
@@ -135,17 +130,42 @@ pub async fn handler(
     *response.status_mut() = status;
     *response.headers_mut() = resp_headers;
 
-    // Write initial log (no response_body yet)
-    write_log(&state.log_dir, id, &log);
+    // Background: accumulate full response body, then write complete trace line
+    let st = state.clone();
+    let method_str = method.to_string();
+    let path_str = path_and_query.to_string();
+    let req_headers = headers_to_value(&headers);
+    let status_u16 = status.as_u16();
+    let elapsed_ms = elapsed.as_millis() as u64;
 
-    // Background: accumulate response chunks, update log when stream ends
-    let log_dir = state.log_dir.clone();
     tokio::spawn(async move {
-        let mut buf = Vec::new();
+        let mut resp_buf = Vec::new();
         while let Some(chunk) = rx.recv().await {
-            buf.extend_from_slice(&chunk);
+            resp_buf.extend_from_slice(&chunk);
         }
-        update_log_response_body(&log_dir, id, &buf);
+
+        let mut entry = serde_json::Map::new();
+        entry.insert("id".into(), Value::Number(id.into()));
+        entry.insert("ts".into(), Value::Number(timestamp_ms().into()));
+        entry.insert("method".into(), Value::String(method_str));
+        entry.insert("path".into(), Value::String(path_str));
+        entry.insert("upstream".into(), Value::String(upstream_url));
+        entry.insert("request_headers".into(), req_headers);
+        entry.insert("request_body".into(), req_body_json);
+        entry.insert("response_status".into(), Value::Number(status_u16.into()));
+        entry.insert("response_headers".into(), resp_headers_val);
+        entry.insert("response_body".into(), body_to_json(&resp_buf));
+        entry.insert("duration_ms".into(), Value::Number(elapsed_ms.into()));
+        entry.insert("streaming".into(), Value::Bool(streaming));
+
+        let _guard = st.trace_lock.lock().unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&st.trace_file)
+            .unwrap();
+        let line = serde_json::to_string(&Value::Object(entry)).unwrap();
+        writeln!(file, "{}", line).ok();
     });
 
     Ok(response)
@@ -186,29 +206,4 @@ fn is_streaming_request(body: &[u8]) -> bool {
         .ok()
         .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
         .unwrap_or(false)
-}
-
-fn write_log(log_dir: &str, id: u64, log: &serde_json::Map<String, Value>) {
-    let path = format!("{}/{:04}.json", log_dir, id);
-    if let Ok(json) = serde_json::to_string_pretty(log) {
-        std::fs::write(&path, json).ok();
-    }
-}
-
-fn update_log_response_body(log_dir: &str, id: u64, body_bytes: &[u8]) {
-    let path = format!("{}/{:04}.json", log_dir, id);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let mut value: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert("response_body".into(), body_to_json(body_bytes));
-        if let Ok(json) = serde_json::to_string_pretty(&value) {
-            std::fs::write(&path, json).ok();
-        }
-    }
 }
