@@ -1,13 +1,15 @@
 mod config;
 mod eval;
 mod format;
+mod grader;
 mod proxy;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::{routing::any, Router};
 
-use config::Config;
+use config::{Config, GraderConfig};
 use eval::types::TurnRecord;
 use proxy::AppState;
 
@@ -22,8 +24,17 @@ async fn main() {
 
     let state = Arc::new(AppState::new(&config, eval_tx));
 
-    // Spawn eval consumer: 异步构建结构化会话视图
-    tokio::spawn(eval::run(eval_rx, log_dir));
+    // 从 trace_file 中提取 jsonl stem，用于 session 文件命名
+    let jsonl_stem = Path::new(&state.trace_file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("session_unknown")
+        .to_string();
+
+    let grader_config = GraderConfig::load(&config.upstream);
+
+    // Spawn eval consumer: 异步构建结构化会话视图 + 评分
+    tokio::spawn(eval::run(eval_rx, log_dir, jsonl_stem, grader_config));
 
     let app = Router::new()
         .fallback(any(proxy::handler))

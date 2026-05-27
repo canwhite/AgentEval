@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 axum = "0.8.9"
-reqwest = { version = "0.13.4", features = ["stream"] }
+reqwest = { version = "0.13.4", features = ["stream", "json"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 dotenvy = "0.15"

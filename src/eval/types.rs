@@ -16,6 +16,9 @@ pub struct SessionView {
     pub session_id: String,
     pub model: String,
     pub upstream: String,
+    /// 该 session 包含的 JSONL 行 ID，回溯原始流量
+    #[serde(default)]
+    pub jsonl_ids: Vec<u64>,
     pub turns: Vec<Turn>,
 }
 

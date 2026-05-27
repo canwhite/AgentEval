@@ -39,3 +39,30 @@ impl Config {
         Self { upstream, port, log_dir, verbose }
     }
 }
+
+/// grader 评测 LLM 配置
+#[derive(Clone)]
+pub struct GraderConfig {
+    pub judge_api_base: String,
+    pub judge_model: String,
+    pub judge_api_key: String,
+}
+
+impl GraderConfig {
+    pub fn load(upstream: &str) -> Self {
+        dotenvy::dotenv().ok();
+
+        let judge_api_base = env::var("AGENTEVAL_JUDGE_API_BASE")
+            .unwrap_or_else(|_| upstream.to_string())
+            .trim_end_matches('/')
+            .to_string();
+
+        let judge_model = env::var("AGENTEVAL_JUDGE_MODEL")
+            .unwrap_or_else(|_| "MiniMax-M2.5".to_string());
+
+        let judge_api_key = env::var("AGENTEVAL_JUDGE_API_KEY")
+            .unwrap_or_default();
+
+        Self { judge_api_base, judge_model, judge_api_key }
+    }
+}
