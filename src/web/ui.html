@@ -118,6 +118,32 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 /* Loading */
 .loading { text-align: center; padding: 40px; color: var(--text2); }
 
+/* Diagnose */
+.diag-badge { display: inline-block; font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; cursor: pointer; transition: background 0.2s; text-decoration: none !important; }
+.diag-btn { background: rgba(255,145,0,0.15); color: var(--orange); border: 1px solid rgba(255,145,0,0.3); }
+.diag-btn:hover { background: rgba(255,145,0,0.3); }
+.diag-issues { background: rgba(255,23,68,0.15); color: var(--red); border: 1px solid rgba(255,23,68,0.3); }
+.diag-clean { background: rgba(0,200,83,0.15); color: var(--green); border: 1px solid rgba(0,200,83,0.3); }
+.diag-pending { background: rgba(255,145,0,0.1); color: var(--orange); }
+.diag-panel { margin-top: 20px; }
+.diag-issue-card { padding: 12px 14px; margin-bottom: 8px; border-radius: var(--radius); background: rgba(255,255,255,0.03); border-left: 3px solid transparent; }
+.diag-issue-card.sev-error { border-left-color: var(--red); }
+.diag-issue-card.sev-warn { border-left-color: var(--orange); }
+.diag-issue-card.sev-info { border-left-color: var(--blue); }
+.diag-issue-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 4px; }
+.diag-issue-cat { display: inline-block; font-size: 0.7rem; padding: 1px 6px; border-radius: 3px; margin-right: 6px; text-transform: uppercase; }
+.cat-tool { background: rgba(255,145,0,0.2); color: var(--orange); }
+.cat-prompt { background: rgba(179,136,255,0.2); color: var(--purple); }
+.cat-token { background: rgba(68,138,255,0.2); color: var(--blue); }
+.cat-view { background: rgba(255,214,0,0.2); color: var(--yellow); }
+.diag-issue-detail { font-size: 0.85rem; color: var(--text2); line-height: 1.5; }
+.diag-issue-loc { font-size: 0.78rem; color: var(--text2); margin-top: 4px; font-family: monospace; }
+.diag-issue-evidence { font-size: 0.78rem; color: var(--text2); margin-top: 4px; padding: 6px 8px; background: rgba(0,0,0,0.2); border-radius: 4px; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow-y: auto; }
+.diag-raw { margin-top: 12px; }
+.diag-raw-toggle { cursor: pointer; color: var(--blue); font-size: 0.82rem; }
+.diag-raw-toggle:hover { text-decoration: underline; }
+.diag-raw-content { margin-top: 6px; padding: 10px 12px; background: rgba(0,0,0,0.2); border-radius: 4px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; display: none; }
+
 /* Responsive */
 @media (max-width: 800px) {
   .container { padding: 12px; }
@@ -283,7 +309,7 @@ function renderDashboardContent() {
   if (allSessions.length === 0) {
     html += '<div class="empty-state"><p>No sessions match this filter.</p></div>';
   } else {
-    html += '<div class="card"><table><thead><tr><th>Session</th><th>Model</th><th>Turns</th><th>Overall</th><th>Dimensions</th></tr></thead><tbody>';
+    html += '<div class="card"><table><thead><tr><th>Session</th><th>Model</th><th>Turns</th><th>Overall</th><th>Dimensions</th><th>Diag</th></tr></thead><tbody>';
 
     for (var i = 0; i < sessions.length; i++) {
       var s = sessions[i];
@@ -299,8 +325,10 @@ function renderDashboardContent() {
           html += '<span title="' + escAttr(d.metric) + ': ' + d.score.toFixed(2) + '">' + escHtml(abbrevMetric(d.metric)) + ' ' + d.score.toFixed(2) + '</span>';
         }
         html += '</div></td>';
+        html += '<td>' + diagCell(s) + '</td>';
       } else {
         html += '<td><button class="btn btn-sm" onclick="event.stopPropagation();triggerGrade(\'' + escAttr(s.session_id) + '\').then(function(){renderDashboard();})">Grade</button></td><td class="hide-mobile"></td>';
+        html += '<td>' + diagCell(s) + '</td>';
       }
       html += '</tr>';
     }
@@ -390,6 +418,18 @@ async function renderDetail(sessionId) {
     html += '<p style="color:var(--text2);margin-bottom:12px">Not yet graded</p>';
     html += '<button class="btn" onclick="triggerGrade(\'' + escAttr(sessionId) + '\')">Grade Now</button>';
     html += '<p id="grade-status" style="color:var(--text2);margin-top:8px;font-size:0.85rem"></p>';
+    html += '</div>';
+  }
+
+  // Diagnose panel (loaded below grade section)
+  var diagReport = await loadDiagnose(sessionId);
+  if (diagReport) {
+    html += renderDiagnosePanel(diagReport, sessionId);
+  } else {
+    html += '<div class="diag-panel" style="margin-top:20px">';
+    html += '<button class="btn" onclick="triggerDiagnoseDetail(\'' + escAttr(sessionId) + '\')">\ud83d\udd0d Run Diagnosis</button>';
+    html += '<span id="diag-status" style="color:var(--text2);margin-left:10px;font-size:0.85rem"></span>';
+    html += '<div id="diag-result"></div>';
     html += '</div>';
   }
 
@@ -503,6 +543,132 @@ async function triggerGrade(sessionId, btn) {
     }
     btn.disabled = false;
     btn.textContent = 'Grade Now';
+  }
+}
+
+// ── Diagnose ──
+window._diagCache = {};
+
+function diagCell(s) {
+  var showDiag = !s.graded || s.overall < 0.6;
+  if (!showDiag) return '';
+  var sid = s.session_id;
+
+  // Server-provided summary (from .diagnose.json on disk) takes priority
+  var summary = s.diagnose_summary || window._diagCache[sid];
+  if (summary === undefined) {
+    return '<span class="diag-badge diag-btn" onclick="event.stopPropagation();triggerDiagnose(\'' + escAttr(sid) + '\', this)">Diagnose</span>';
+  }
+  if (summary === null) {
+    return '<span class="diag-badge diag-pending">...</span>';
+  }
+  if (summary.total_issues > 0) {
+    var label = '\u26a0 ' + summary.total_issues + ' issues';
+    return '<span class="diag-badge diag-issues" onclick="event.stopPropagation();navTo({view:\'detail\',session:\'' + escAttr(sid) + '\'})" title="' + summary.errors + ' errors, ' + summary.warnings + ' warnings">' + label + '</span>';
+  }
+  return '<span class="diag-badge diag-clean">\u2713 clean</span>';
+}
+
+async function triggerDiagnose(sessionId, el) {
+  window._diagCache[sessionId] = null;
+  el.className = 'diag-badge diag-pending';
+  el.textContent = '...';
+  el.onclick = '';
+  try {
+    var resp = await fetch(API + '/sessions/' + encodeURIComponent(sessionId) + '/diagnose', { method: 'POST' });
+    if (!resp.ok) throw new Error(resp.status);
+    var report = await resp.json();
+    window._diagCache[sessionId] = report.summary;
+  } catch (e) {
+    window._diagCache[sessionId] = { total_issues: 0, errors: 0, warnings: 0, infos: 0 };
+  }
+  renderDashboard();
+}
+
+async function loadDiagnose(sessionId) {
+  try {
+    var resp = await fetch(API + '/sessions/' + encodeURIComponent(sessionId) + '/diagnose');
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+function renderDiagnosePanel(report, sessionId) {
+  if (!report || !report.issues) return '';
+  var html = '<div class="diag-panel">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
+  html += '<h3 style="margin:0">\ud83d\udd0d Diagnosis</h3>';
+  if (sessionId) {
+    html += '<button class="btn btn-sm" onclick="event.stopPropagation();triggerReDiagnose(\'' + escAttr(sessionId) + '\')">\ud83d\udd04 Re-diagnose</button>';
+  }
+  html += '</div>';
+  html += '<div class="card">';
+
+  if (report.issues.length === 0) {
+    html += '<div style="text-align:center;padding:16px;color:var(--green)">\u2713 No issues found</div>';
+  } else {
+    var s = report.summary;
+    html += '<div style="margin-bottom:12px;font-size:0.9rem;color:var(--text2)">';
+    html += '\u26a0 ' + s.total_issues + ' issues found (' + s.errors + ' errors, ' + s.warnings + ' warnings, ' + s.infos + ' infos)';
+    html += '</div>';
+
+    for (var i = 0; i < report.issues.length; i++) {
+      var issue = report.issues[i];
+      var sevClass = issue.severity === 'Error' ? 'sev-error' : (issue.severity === 'Warn' ? 'sev-warn' : 'sev-info');
+      var icon = issue.severity === 'Error' ? '\ud83d\udd34' : (issue.severity === 'Warn' ? '\ud83d\udfe1' : '\ud83d\udd35');
+      var catClass = 'cat-' + issue.category.toLowerCase();
+      html += '<div class="diag-issue-card ' + sevClass + '">';
+      html += '<div class="diag-issue-title">' + icon + ' <span class="diag-issue-cat ' + catClass + '">' + escHtml(issue.category) + '</span> ' + escHtml(issue.title) + '</div>';
+      html += '<div class="diag-issue-detail">' + escHtml(issue.detail) + '</div>';
+      if (issue.location && (issue.location.jsonl_id || issue.location.turn_id)) {
+        html += '<div class="diag-issue-loc">Location: jsonl_id=' + escHtml(String(issue.location.jsonl_id)) + ', turn=' + escHtml(String(issue.location.turn_id)) + ', step=' + escHtml(String(issue.location.step_index)) + '</div>';
+      }
+      if (issue.evidence) {
+        html += '<details class="diag-issue-evidence"><summary>Evidence</summary><div style="margin-top:4px">' + escHtml(issue.evidence) + '</div></details>';
+      }
+      html += '</div>';
+    }
+  }
+  html += '</div></div>';
+  return html;
+}
+
+
+async function triggerDiagnoseDetail(sessionId) {
+  var btn = event.target;
+  var status = document.getElementById('diag-status');
+  var result = document.getElementById('diag-result');
+  btn.disabled = true;
+  btn.textContent = 'Diagnosing...';
+  if (status) status.textContent = '';
+  try {
+    var resp = await fetch(API + '/sessions/' + encodeURIComponent(sessionId) + '/diagnose', { method: 'POST' });
+    if (!resp.ok) throw new Error(resp.status);
+    var report = await resp.json();
+    if (result) result.innerHTML = renderDiagnosePanel(report, sessionId);
+    btn.style.display = 'none';
+    if (status) { status.textContent = 'Done!'; status.style.color = 'var(--green)'; }
+  } catch (e) {
+    if (status) { status.textContent = 'Failed: ' + e.message; status.style.color = 'var(--red)'; }
+    btn.disabled = false;
+    btn.textContent = '\ud83d\udd0d Run Diagnosis';
+  }
+}
+
+async function triggerReDiagnose(sessionId) {
+  var panel = document.querySelector('.diag-panel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="card" style="text-align:center;padding:20px;color:var(--text2)">Re-diagnosing...</div>';
+  try {
+    var resp = await fetch(API + '/sessions/' + encodeURIComponent(sessionId) + '/diagnose', { method: 'POST' });
+    if (!resp.ok) throw new Error(resp.status);
+    var report = await resp.json();
+    window._diagCache[sessionId] = report.summary;
+    panel.outerHTML = renderDiagnosePanel(report, sessionId);
+  } catch (e) {
+    panel.innerHTML = '<div class="card" style="text-align:center;padding:20px;color:var(--red)">Re-diagnose failed: ' + escHtml(e.message) + '</div>';
   }
 }
 

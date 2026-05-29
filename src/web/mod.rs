@@ -9,6 +9,7 @@ use axum::{
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::diagnose;
 use crate::eval::types::SessionView;
 use crate::grader;
 use crate::grader::types::GradeReport;
@@ -27,6 +28,16 @@ struct SessionSummary {
     overall: Option<f64>,
     graded: bool,
     dimensions: Vec<DimensionSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnose_summary: Option<DiagnoseSummary>,
+}
+
+#[derive(Serialize)]
+struct DiagnoseSummary {
+    total_issues: usize,
+    errors: usize,
+    warnings: usize,
+    infos: usize,
 }
 
 #[derive(Serialize)]
@@ -77,6 +88,7 @@ pub async fn list_sessions(
                         reason: None,
                     })
                     .collect();
+                let diag = read_diagnose_summary(&state.log_dir, sid);
                 summaries.push(SessionSummary {
                     session_id: sid.clone(),
                     model: report.model,
@@ -85,6 +97,7 @@ pub async fn list_sessions(
                     overall: Some(report.overall),
                     graded: true,
                     dimensions: dims,
+                    diagnose_summary: diag,
                 });
                 continue;
             }
@@ -93,6 +106,7 @@ pub async fn list_sessions(
         // No grade yet — try view
         if let Ok(view_json) = std::fs::read_to_string(&view_path) {
             if let Ok(view) = serde_json::from_str::<SessionView>(&view_json) {
+                let diag = read_diagnose_summary(&state.log_dir, sid);
                 summaries.push(SessionSummary {
                     session_id: sid.clone(),
                     model: view.model,
@@ -101,6 +115,7 @@ pub async fn list_sessions(
                     overall: None,
                     graded: false,
                     dimensions: Vec::new(),
+                    diagnose_summary: diag,
                 });
             }
         }
@@ -169,4 +184,74 @@ pub async fn grade_session(
 
 fn is_safe_session_id(s: &str) -> bool {
     !s.contains("..") && !s.contains('/') && !s.contains('\\')
+}
+
+fn read_diagnose_summary(log_dir: &str, session_id: &str) -> Option<DiagnoseSummary> {
+    let path = format!("{}/{}.diagnose.json", log_dir, session_id);
+    let json = std::fs::read_to_string(&path).ok()?;
+    let report: diagnose::types::DiagnoseReport = serde_json::from_str(&json).ok()?;
+    Some(DiagnoseSummary {
+        total_issues: report.summary.total_issues,
+        errors: report.summary.errors,
+        warnings: report.summary.warnings,
+        infos: report.summary.infos,
+    })
+}
+
+// ── Diagnose handlers ──
+
+pub async fn diagnose_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !is_safe_session_id(&session_id) {
+        return Err((StatusCode::BAD_REQUEST, "invalid session_id".into()));
+    }
+
+    let report = diagnose::run(&session_id, &state.log_dir)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(serde_json::to_value(&report).unwrap_or_default()))
+}
+
+pub async fn get_diagnose(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !is_safe_session_id(&session_id) {
+        return Err((StatusCode::BAD_REQUEST, "invalid session_id".into()));
+    }
+
+    let report = diagnose::read_existing(&session_id, &state.log_dir)
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+
+    Ok(Json(serde_json::to_value(&report).unwrap_or_default()))
+}
+
+#[derive(serde::Deserialize)]
+pub struct RawQuery {
+    pub ids: Option<String>,
+}
+
+pub async fn get_raw_jsonl(
+    State(state): State<Arc<AppState>>,
+    Path(jsonl_stem): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<RawQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !is_safe_session_id(&jsonl_stem) {
+        return Err((StatusCode::BAD_REQUEST, "invalid jsonl_stem".into()));
+    }
+
+    let ids: Vec<u64> = match &query.ids {
+        Some(s) => s
+            .split(',')
+            .filter_map(|p| p.trim().parse::<u64>().ok())
+            .collect(),
+        None => Vec::new(),
+    };
+
+    let entries = diagnose::read_raw_jsonl(&jsonl_stem, &ids, &state.log_dir)
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+
+    Ok(Json(serde_json::json!({ "entries": entries })))
 }

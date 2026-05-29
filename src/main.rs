@@ -1,4 +1,5 @@
 mod config;
+mod diagnose;
 mod eval;
 mod format;
 mod grader;
@@ -16,6 +17,13 @@ use proxy::AppState;
 
 #[tokio::main]
 async fn main() {
+    // CLI: diagnose subcommand
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 2 && args[1] == "diagnose" {
+        run_diagnose_cli(&args);
+        return;
+    }
+
     let config = Config::load();
 
     std::fs::create_dir_all(&config.log_dir).expect("Failed to create log directory");
@@ -43,6 +51,8 @@ async fn main() {
             .route("/dashboard/api/sessions", get(web::list_sessions))
             .route("/dashboard/api/sessions/{session_id}", get(web::get_session))
             .route("/dashboard/api/sessions/{session_id}/grade", post(web::grade_session))
+            .route("/dashboard/api/sessions/{session_id}/diagnose", post(web::diagnose_session).get(web::get_diagnose))
+            .route("/dashboard/api/raw/{jsonl_stem}", get(web::get_raw_jsonl))
             .fallback(any(proxy::handler))
             .with_state(state)
     } else {
@@ -60,4 +70,74 @@ async fn main() {
     }
 
     axum::serve(listener, app).await.unwrap();
+}
+
+fn run_diagnose_cli(args: &[String]) {
+    let session_id = match args.get(2) {
+        Some(id) => id.as_str(),
+        None => {
+            eprintln!("Usage: cargo run -- diagnose <session_id> [--format terminal|json]");
+            std::process::exit(1);
+        }
+    };
+
+    let format = if args.len() >= 4 && args[3] == "--format" {
+        args.get(4).map(|s| s.as_str()).unwrap_or("json")
+    } else {
+        "json"
+    };
+
+    let log_dir = std::env::var("AGENTEVAL_LOG_DIR").unwrap_or_else(|_| "./logs".to_string());
+
+    match diagnose::run(session_id, &log_dir) {
+        Ok(report) => match format {
+            "terminal" => {
+                println!("=== Diagnose Report: {} ===", report.session_id);
+                println!("Diagnosed at: {}", report.diagnosed_at);
+                println!(
+                    "Issues: {} total ({} errors, {} warnings, {} infos)",
+                    report.summary.total_issues,
+                    report.summary.errors,
+                    report.summary.warnings,
+                    report.summary.infos
+                );
+                if report.issues.is_empty() {
+                    println!("✓ No issues found.");
+                } else {
+                    for (_i, issue) in report.issues.iter().enumerate() {
+                        let icon = match issue.severity {
+                            diagnose::types::Severity::Error => "🔴",
+                            diagnose::types::Severity::Warn => "🟡",
+                            diagnose::types::Severity::Info => "🔵",
+                        };
+                        println!();
+                        println!(
+                            "{} [{:?}] {}",
+                            icon, issue.category, issue.title
+                        );
+                        println!("   {}", issue.detail);
+                        if !issue.evidence.is_empty() {
+                            println!("   Evidence: {}", issue.evidence);
+                        }
+                        println!(
+                            "   Location: jsonl_id={:?}, turn={:?}, step={:?}",
+                            issue.location.jsonl_id,
+                            issue.location.turn_id,
+                            issue.location.step_index
+                        );
+                    }
+                }
+            }
+            _ => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).unwrap_or_default()
+                );
+            }
+        },
+        Err(e) => {
+            eprintln!("Diagnose failed: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
