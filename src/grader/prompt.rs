@@ -96,9 +96,15 @@ pub fn build_judge_prompt(session_text: &str) -> String {
 
 fn truncate(s: &str, max_len: usize) -> String {
     let s = s.trim();
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_len])
+        let end = s
+            .char_indices()
+            .take(max_len)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        format!("{}...", &s[..end])
     }
 }

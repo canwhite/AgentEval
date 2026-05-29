@@ -132,14 +132,14 @@ impl SessionBuilder {
         duration_ms: u64,
         jsonl_id: u64,
     ) {
-        self.turn_counter += 1;
-        self.jsonl_ids.push(jsonl_id);
-
-        // 1. 解析 request messages
+        // 1. 解析 request messages（先解析，避免空 messages 导致 turn_counter 跳号）
         let current_messages = format::openai::parse_request_messages(request_body);
         if current_messages.is_empty() {
             return;
         }
+
+        self.turn_counter += 1;
+        self.jsonl_ids.push(jsonl_id);
 
         // 2. Diff：找到本轮新增的 user / tool 消息
         let new_messages = diff_messages(&self.prev_messages, &current_messages);
