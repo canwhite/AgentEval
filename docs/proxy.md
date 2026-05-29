@@ -99,6 +99,35 @@ for (key, value) in headers.iter() {
 - **`Host`**：客户端写的是 `127.0.0.1:57633`，但我们要发给 `api.anthropic.com`。reqwest 会自动根据目标 URL 填入正确的 Host header 和 SNI。
 - **`Content-Length` / `Transfer-Encoding`**：reqwest 会根据实际 body 大小重新计算。原样转发会导致长度不匹配。
 
+**那这三个 header 在哪里重新生成？**
+
+不在 AgentEval 代码里，在依赖链的深处：
+
+```
+proxy.rs          req_builder.body(body.to_vec())
+                  req_builder.send().await
+                      │
+                      ▼
+reqwest           Client::execute()
+                      │  根据 URL scheme 选 connector（HTTPS → TLS）
+                      ▼
+hyper             proto::h1::conn 或 h2::client
+                      │  构造真正的 HTTP 请求字节流：
+                      │  POST /v1/chat/completions HTTP/1.1
+                      │  Host: api.edgefn.net          ← 从 upstream_url 提取
+                      │  Content-Length: 1234          ← 从 body.len() 计算
+                      │  Authorization: Bearer sk-xxx  ← 你转发的自定义 header
+                      │  ...
+                      ▼
+tokio-rustls      TLS 加密
+                      ▼
+TCP socket  ────►  上游服务器
+```
+
+关键在 **hyper**。reqwest 是 hyper 的 wrapper，当你给 `.body(Vec<u8>)` 时 hyper 知道 body 长度，自动写 `Content-Length`；当给 stream body 时用 `Transfer-Encoding: chunked`。`Host` 从 URL 的 host 部分提取。
+
+清洗的本质：**扔掉旧连接的信息，让 reqwest / hyper 按新连接重新生成**。
+
 ### 第 4 步：代理发出 HTTPS 请求
 
 ```rust
@@ -300,26 +329,203 @@ cat ~/.agenteval/logs/0001.json | python3 -m json.tool
 
 ---
 
+## 关键实现 (`src/proxy.rs`)
+
+### AppState
+
+```rust
+pub struct AppState {
+    pub upstream_base: String,      // 上游 API 地址
+    pub client: Client,             // reqwest HTTPS 客户端（no_proxy）
+    pub trace_file: String,         // session_{ts}.jsonl 路径
+    pub trace_lock: Mutex<()>,      // JSONL 写入互斥锁
+    pub verbose: bool,
+    pub counter: AtomicU64,         // 自增请求 ID
+    pub eval_tx: UnboundedSender<TurnRecord>,  // 发给 eval 模块
+}
+
+impl AppState {
+    pub fn new(config: &Config, eval_tx: UnboundedSender<TurnRecord>) -> Self {
+        let client = Client::builder()
+            .no_proxy()  // 避免代理自身被拦截
+            .build()
+            .expect("Failed to create HTTP client");
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let trace_file = format!("{}/session_{}.jsonl", config.log_dir, now);
+
+        Self { upstream_base: config.upstream.clone(), client, trace_file,
+               trace_lock: Mutex::new(()), verbose: config.verbose,
+               counter: AtomicU64::new(1), eval_tx }
+    }
+}
+```
+
+### handler 核心流程
+
+handler 处理四个阶段：**① 拼接上游 URL → ② 清洗 header → ③ 转发请求 → ④ 后台 tee 响应 + 写 JSONL + 发 eval**。
+
+```rust
+pub async fn handler(
+    State(state): State<Arc<AppState>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, (StatusCode, String)> {
+    let start = Instant::now();
+    let id = state.counter.fetch_add(1, Ordering::SeqCst);
+
+    // ① 拼接上游 URL：客户端请求的 path + query 原样接到 upstream_base
+    let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let upstream_url = format!("{}{}", state.upstream_base, path_and_query);
+
+    // 预处理 body（用于后续日志）
+    let streaming = is_streaming_request(&body);
+    let req_body_json = body_to_json(&body);
+
+    // ② 清洗 header → 转发到上游
+    let mut req_builder = state.client.request(method.clone(), &upstream_url);
+    for (key, value) in headers.iter() {
+        let k = key.as_str().to_lowercase();
+        if k == "host" || k == "content-length" || k == "transfer-encoding" {
+            continue;  // 跳过 3 个会被 reqwest 重新计算的 header
+        }
+        req_builder = req_builder.header(key.as_str(), value);
+    }
+    if !body.is_empty() {
+        req_builder = req_builder.body(body.to_vec());
+    }
+
+
+    //用于接收上游返回值
+    let upstream_resp = req_builder.send().await
+        .map_err(|e| { eprintln!("[{:04}] upstream error: {}", id, e);
+                         (StatusCode::BAD_GATEWAY, e.to_string()) })?;
+
+    let status = upstream_resp.status();
+    let resp_headers = upstream_resp.headers().clone();
+    //这个事为了标记结束时间吗
+    let elapsed = start.elapsed();
+
+    // ③ 流式透传：bytes_stream → Frame → StreamBody
+    // 同时通过 channel tee 一份数据，用于后台拼完整 response body
+    // uboundeded channel 是不阻塞，需要针对那些知道有间隔的业务
+    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+    //主要是为了将bytes stream转frame
+    let frame_stream = upstream_resp.bytes_stream().map(move |result| match result {
+        Ok(bytes) => {
+            tx.send(bytes.to_vec()).ok();  // tee 到 channel
+            Ok(Frame::data(bytes))
+        }
+
+        Err(e) => Err(Box::new(e) as Box<dyn Error + Send + Sync>),
+    });
+
+    //这里是封装成streamBody
+    let axum_body = Body::new(StreamBody::new(frame_stream));
+    
+    //这里相当于先有body再有状态和头
+    let mut response = Response::new(axum_body);
+    *response.status_mut() = status;
+    *response.headers_mut() = resp_headers;
+
+    // ④ 后台任务：accumulate 完整 response body → 写 JSONL → 发 eval
+    let st = state.clone();
+    tokio::spawn(async move {
+        let mut resp_buf = Vec::new();
+        while let Some(chunk) = rx.recv().await {
+            resp_buf.extend_from_slice(&chunk);
+        }
+
+        let resp_body_json = body_to_json(&resp_buf);
+
+        // 写 JSONL 行
+        let entry = serde_json::json!({
+            "id": id, "ts": timestamp_ms(), "method": method.to_string(),
+            "path": path_and_query, "upstream": upstream_url,
+            "request_headers": headers_to_value(&headers),
+            "request_body": req_body_json.clone(),
+            "response_status": status.as_u16(),
+            "response_headers": headers_to_value(&resp_headers),
+            "response_body": resp_body_json.clone(),
+            "duration_ms": elapsed.as_millis() as u64,
+            "streaming": streaming,
+        });
+
+        let _guard = st.trace_lock.lock().unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true).append(true).open(&st.trace_file).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&entry).unwrap()).ok();
+        drop(_guard);
+
+        // 发给 eval 模块（异步构建 SessionView + 评分）
+        st.eval_tx.send(TurnRecord {
+            id,
+            request_body: req_body_json,
+            response_body: resp_body_json,
+            duration_ms: elapsed.as_millis() as u64,
+        }).ok();
+    });
+
+    Ok(response)
+}
+```
+
+**设计要点**：
+- 后台 `tokio::spawn` 让响应字节一到就流式推给客户端，JSONL 写入和 eval 不阻塞响应
+- `trace_lock` 保证多请求并发时 JSONL 写入不交错
+- `eval_tx` 是无界 channel，proxy 侧不会因 eval 处理慢而反压
+
+### 辅助函数
+
+```rust
+/// JSON body → Value；非 JSON → "字符串" 或 "<binary N bytes>"
+fn body_to_json(body: &[u8]) -> Value {
+    if body.is_empty() { return Value::Null; }
+    serde_json::from_slice(body).unwrap_or_else(|_| match str::from_utf8(body) {
+        Ok(s) => Value::String(s.to_string()),
+        Err(_) => Value::String(format!("<binary {} bytes>", body.len())),
+    })
+}
+
+/// 所有 header → { key: "value", ... }
+fn headers_to_value(headers: &HeaderMap) -> Value { ... }
+
+/// 检测请求 body 是否带 "stream": true
+fn is_streaming_request(body: &[u8]) -> bool { ... }
+```
+
 ## 项目结构
 
 ```
 AgentEval/
-├── .env.example         # 环境变量模板（提交 git）
-├── .env                 # 你的本地配置（gitignore）
-├── Cargo.toml           # 依赖：axum, reqwest, tokio, serde_json, dotenvy, clap
+├── .env                 # 本地配置（gitignore）
+├── Cargo.toml           # 依赖：axum, reqwest, tokio, serde_json, dotenvy
 ├── src/
-│   ├── main.rs          # 入口：加载 .env，启动 server（~30 行）
-│   ├── config.rs        # Config::load()，读环境变量
-│   └── proxy.rs         # proxy::handler() + 辅助函数
+│   ├── main.rs          # 入口：加载配置，启动 server
+│   ├── config.rs        # Config + GraderConfig，读环境变量
+│   ├── proxy.rs         # proxy::handler() — 代理核心
+│   ├── eval/            # SessionView 构建 + 边界检测
+│   │   ├── mod.rs       # eval::run() 主循环
+│   │   └── types.rs     # SessionView, Turn, Step, TurnRecord
+│   ├── grader/          # 自动评分
+│   │   ├── mod.rs       # run_pipeline() 流水线编排
+│   │   ├── rules.rs     # 规则统计 + 打分
+│   │   ├── prompt.rs    # SessionView → LLM prompt
+│   │   ├── judge.rs     # 调评测 LLM API
+│   │   └── types.rs     # GradeReport, DimensionScore
+│   └── format/          # 请求/响应解析
+│       └── openai.rs    # OpenAI 格式解析
 └── docs/
-    └── proxy.md         # 你正在看的这个文件
+    ├── proxy.md         # 你正在看的这个文件
+    ├── grader-design.md # Grader 方案设计
+    └── grader-impl.md   # Grader 实现细节
 ```
-
-| 文件 | 职责 |
-|---|---|
-| `config.rs` | `Config::load()` → `dotenvy::dotenv()` + `clap::Parser`，从 `.env` / 环境变量 / CLI 读配置 |
-| `proxy.rs` | `proxy::handler()` → 接收请求→清洗 header→转发上游→流式透传→写日志 |
-| `main.rs` | `main()` → `Config::load()` + `axum::serve()` |
 
 ## 关键依赖选型
 

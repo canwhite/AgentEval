@@ -23,6 +23,7 @@ pub struct AppState {
     pub trace_lock: Mutex<()>,
     pub verbose: bool,
     pub counter: std::sync::atomic::AtomicU64,
+    //单拿一个sender
     pub eval_tx: tokio::sync::mpsc::UnboundedSender<TurnRecord>,
 }
 
@@ -177,6 +178,7 @@ pub async fn handler(
         drop(_guard);
 
         // Send to eval for structured session view
+        // 这里是拼接完之后发，收是在eval里
         st.eval_tx
             .send(TurnRecord {
                 id,

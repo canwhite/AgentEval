@@ -10,7 +10,9 @@
 
 ```rust
 fn common_prefix_len(prev: &[Value], current: &[Value]) -> usize {
+    //这里如何理解？
     prev.iter()
+        //zip配对得到的是元组
         .zip(current.iter())
         .take_while(|(a, b)| a == b)
         .count()
@@ -35,6 +37,7 @@ pub async fn run(
 
     loop {
         let record = tokio::select! {
+            //这里监听TurnRecord
             recv = rx.recv() => recv,
             _ = tokio::time::sleep(Duration::from_secs(120)) => {
                 if let Some(ref b) = builder {
