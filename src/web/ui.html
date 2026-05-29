@@ -37,6 +37,12 @@ header .actions { display: flex; gap: 10px; align-items: center; }
 .btn:hover { background: rgba(255,255,255,0.1); }
 .btn-sm { padding: 4px 10px; font-size: 0.78rem; }
 
+/* Filter bar */
+.filter-bar { display: flex; gap: 8px; padding: 12px 0; flex-wrap: wrap; }
+.filter-btn { padding: 5px 14px; border: 1px solid rgba(255,255,255,0.12); border-radius: 20px; background: transparent; color: var(--text2); cursor: pointer; font-size: 0.82rem; transition: all 0.2s; }
+.filter-btn:hover { border-color: rgba(255,255,255,0.3); color: var(--text); }
+.filter-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
 /* Score colors */
 .score-high { color: var(--green); }
 .score-good { color: #64dd17; }
@@ -182,6 +188,8 @@ function navTo(params) {
 }
 
 // ── Dashboard ──
+window._activeFilter = window._activeFilter || 'low';
+
 async function renderDashboard() {
   document.getElementById('page-title').textContent = 'AgentEval Dashboard';
   document.getElementById('header-actions').innerHTML =
@@ -196,49 +204,95 @@ async function renderDashboard() {
   try {
     var resp = await fetch(API + '/sessions');
     var data = await resp.json();
-    var sessions = data.sessions || [];
+    window._sessions = data.sessions || [];
   } catch (e) {
     document.getElementById('content').innerHTML = '<div class="empty-state"><h2>Error</h2><p>Failed to load sessions: ' + e.message + '</p></div>';
     return;
   }
 
-  if (sessions.length === 0) {
+  if (window._sessions.length === 0) {
     document.getElementById('content').innerHTML = '<div class="empty-state"><h2>No sessions yet</h2><p>Start the proxy and send requests to see evaluation results here.</p></div>';
     return;
   }
 
+  renderDashboardContent();
+}
+
+function switchFilter(filter) {
+  window._activeFilter = filter;
+  renderDashboardContent();
+}
+
+function getFilteredSessions() {
+  var sessions = window._sessions;
+  var filter = window._activeFilter;
+
+  if (filter === 'low') {
+    return sessions.filter(function(s) {
+      return !s.graded || s.overall < 0.6;
+    });
+  } else if (filter === 'mid') {
+    return sessions.filter(function(s) {
+      return s.graded && s.overall >= 0.6 && s.overall <= 0.8;
+    });
+  } else if (filter === 'high') {
+    return sessions.filter(function(s) {
+      return s.graded && s.overall > 0.8;
+    });
+  }
+  return sessions;
+}
+
+function renderDashboardContent() {
+  var sessions = getFilteredSessions();
   var graded = sessions.filter(function(s) { return s.graded; });
   var pending = sessions.filter(function(s) { return !s.graded; });
   var avgOverall = graded.length ? (graded.reduce(function(a,b) { return a + b.overall; }, 0) / graded.length) : 0;
 
-  var html = '<div style="margin-bottom:20px;color:var(--text2);font-size:0.9rem">'
-    + sessions.length + ' sessions total';
+  var html = '';
+
+  // Filter bar
+  html += '<div class="filter-bar">';
+  html += '<button class="filter-btn' + (window._activeFilter === 'all' ? ' active' : '') + '" onclick="switchFilter(\'all\')">全部</button>';
+  html += '<button class="filter-btn' + (window._activeFilter === 'low' ? ' active' : '') + '" onclick="switchFilter(\'low\')">&lt;6分</button>';
+  html += '<button class="filter-btn' + (window._activeFilter === 'mid' ? ' active' : '') + '" onclick="switchFilter(\'mid\')">6-8分</button>';
+  html += '<button class="filter-btn' + (window._activeFilter === 'high' ? ' active' : '') + '" onclick="switchFilter(\'high\')">&gt;8分</button>';
+  html += '</div>';
+
+  // Stats
+  html += '<div style="margin-bottom:16px;color:var(--text2);font-size:0.9rem">'
+    + sessions.length + ' sessions';
   if (graded.length) html += ' &middot; ' + graded.length + ' graded &middot; avg overall: <b style="color:' + scoreColor(avgOverall) + '">' + (avgOverall*100).toFixed(1) + '%</b>';
   if (pending.length) html += ' &middot; ' + pending.length + ' pending';
   html += '</div>';
 
-  html += '<div class="card"><table><thead><tr><th>Session</th><th>Model</th><th>Turns</th><th>Overall</th><th>Dimensions</th></tr></thead><tbody>';
+  if (sessions.length === 0) {
+    html += '<div class="empty-state"><p>No sessions match this filter.</p></div>';
+  } else {
+    html += '<div class="card"><table><thead><tr><th>Session</th><th>Model</th><th>Turns</th><th>Overall</th><th>Dimensions</th></tr></thead><tbody>';
 
-  for (var i = 0; i < sessions.length; i++) {
-    var s = sessions[i];
-    html += '<tr>';
-    html += '<td><span class="session-link" onclick="navTo({view:\'detail\',session:\'' + escAttr(s.session_id) + '\'})">' + escHtml(s.session_id) + '</span></td>';
-    html += '<td class="hide-mobile">' + escHtml(s.model) + '</td>';
-    html += '<td>' + s.turn_count + '</td>';
-    if (s.graded) {
-      html += '<td><b class="' + scoreClass(s.overall) + '">' + s.overall.toFixed(2) + '</b> ' + barHtml(s.overall) + '</td>';
-      html += '<td class="hide-mobile"><div class="dim-mini">';
-      for (var j = 0; j < s.dimensions.length; j++) {
-        var d = s.dimensions[j];
-        html += '<span title="' + escAttr(d.metric) + ': ' + d.score.toFixed(2) + '">' + escHtml(abbrevMetric(d.metric)) + ' ' + d.score.toFixed(2) + '</span>';
+    for (var i = 0; i < sessions.length; i++) {
+      var s = sessions[i];
+      html += '<tr>';
+      html += '<td><span class="session-link" onclick="navTo({view:\'detail\',session:\'' + escAttr(s.session_id) + '\'})">' + escHtml(s.session_id) + '</span></td>';
+      html += '<td class="hide-mobile">' + escHtml(s.model) + '</td>';
+      html += '<td>' + s.turn_count + '</td>';
+      if (s.graded) {
+        html += '<td><b class="' + scoreClass(s.overall) + '">' + s.overall.toFixed(2) + '</b> ' + barHtml(s.overall) + '</td>';
+        html += '<td class="hide-mobile"><div class="dim-mini">';
+        for (var j = 0; j < s.dimensions.length; j++) {
+          var d = s.dimensions[j];
+          html += '<span title="' + escAttr(d.metric) + ': ' + d.score.toFixed(2) + '">' + escHtml(abbrevMetric(d.metric)) + ' ' + d.score.toFixed(2) + '</span>';
+        }
+        html += '</div></td>';
+      } else {
+        html += '<td><button class="btn btn-sm" onclick="event.stopPropagation();triggerGrade(\'' + escAttr(s.session_id) + '\').then(function(){renderDashboard();})">Grade</button></td><td class="hide-mobile"></td>';
       }
-      html += '</div></td>';
-    } else {
-      html += '<td><button class="btn btn-sm" onclick="event.stopPropagation();triggerGrade(\'' + escAttr(s.session_id) + '\').then(function(){renderDashboard();})">Grade</button></td><td class="hide-mobile"></td>';
+      html += '</tr>';
     }
-    html += '</tr>';
+    html += '</tbody></table></div>';
   }
-  html += '</tbody></table></div>';
+
   document.getElementById('content').innerHTML = html;
 }
 
