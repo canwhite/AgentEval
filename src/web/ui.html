@@ -188,7 +188,9 @@ function navTo(params) {
 }
 
 // ── Dashboard ──
+var PAGE_SIZE = 10;
 window._activeFilter = window._activeFilter || 'low';
+window._page = window._page || 1;
 
 async function renderDashboard() {
   document.getElementById('page-title').textContent = 'AgentEval Dashboard';
@@ -220,6 +222,7 @@ async function renderDashboard() {
 
 function switchFilter(filter) {
   window._activeFilter = filter;
+  window._page = 1;
   renderDashboardContent();
 }
 
@@ -243,11 +246,22 @@ function getFilteredSessions() {
   return sessions;
 }
 
+function goPage(p) {
+  window._page = p;
+  renderDashboardContent();
+  window.scrollTo(0, 0);
+}
+
 function renderDashboardContent() {
-  var sessions = getFilteredSessions();
-  var graded = sessions.filter(function(s) { return s.graded; });
-  var pending = sessions.filter(function(s) { return !s.graded; });
+  var allSessions = getFilteredSessions();
+  var graded = allSessions.filter(function(s) { return s.graded; });
+  var pending = allSessions.filter(function(s) { return !s.graded; });
   var avgOverall = graded.length ? (graded.reduce(function(a,b) { return a + b.overall; }, 0) / graded.length) : 0;
+
+  var totalPages = Math.ceil(allSessions.length / PAGE_SIZE);
+  if (window._page > totalPages) window._page = totalPages || 1;
+  var start = (window._page - 1) * PAGE_SIZE;
+  var sessions = allSessions.slice(start, start + PAGE_SIZE);
 
   var html = '';
 
@@ -261,12 +275,12 @@ function renderDashboardContent() {
 
   // Stats
   html += '<div style="margin-bottom:16px;color:var(--text2);font-size:0.9rem">'
-    + sessions.length + ' sessions';
+    + allSessions.length + ' sessions';
   if (graded.length) html += ' &middot; ' + graded.length + ' graded &middot; avg overall: <b style="color:' + scoreColor(avgOverall) + '">' + (avgOverall*100).toFixed(1) + '%</b>';
   if (pending.length) html += ' &middot; ' + pending.length + ' pending';
   html += '</div>';
 
-  if (sessions.length === 0) {
+  if (allSessions.length === 0) {
     html += '<div class="empty-state"><p>No sessions match this filter.</p></div>';
   } else {
     html += '<div class="card"><table><thead><tr><th>Session</th><th>Model</th><th>Turns</th><th>Overall</th><th>Dimensions</th></tr></thead><tbody>';
@@ -291,6 +305,24 @@ function renderDashboardContent() {
       html += '</tr>';
     }
     html += '</tbody></table></div>';
+
+    // Pagination
+    if (totalPages > 1) {
+      html += '<div style="display:flex;justify-content:center;align-items:center;gap:8px;margin-top:16px;font-size:0.85rem">';
+    html += '<button class="btn btn-sm" onclick="goPage(' + (window._page - 1) + ')"' + (window._page <= 1 ? ' disabled' : '') + '>&laquo; Prev</button>';
+    for (var p = 1; p <= totalPages; p++) {
+      if (p === window._page) {
+        html += '<span style="padding:4px 10px;background:var(--accent);border-radius:4px;color:#fff">' + p + '</span>';
+      } else if (p <= 3 || p > totalPages - 3 || Math.abs(p - window._page) <= 1) {
+        html += '<button class="btn btn-sm" onclick="goPage(' + p + ')">' + p + '</button>';
+      } else if (p === 4 || p === totalPages - 3) {
+        html += '<span style="color:var(--text2)">...</span>';
+      }
+    }
+    html += '<button class="btn btn-sm" onclick="goPage(' + (window._page + 1) + ')"' + (window._page >= totalPages ? ' disabled' : '') + '>Next &raquo;</button>';
+    html += '<span style="color:var(--text2);margin-left:8px">' + allSessions.length + ' total / ' + PAGE_SIZE + ' per page</span>';
+    html += '</div>';
+    }
   }
 
   document.getElementById('content').innerHTML = html;
