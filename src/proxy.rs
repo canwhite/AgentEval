@@ -13,7 +13,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::config::Config;
+use crate::config::{Config, GraderConfig};
 use crate::eval::types::TurnRecord;
 
 pub struct AppState {
@@ -25,11 +25,12 @@ pub struct AppState {
     pub counter: std::sync::atomic::AtomicU64,
     pub eval_tx: tokio::sync::mpsc::UnboundedSender<TurnRecord>,
     pub log_dir: String,
+    pub grader_config: GraderConfig,
 }
 
 
 impl AppState {
-    pub fn new(config: &Config, eval_tx: tokio::sync::mpsc::UnboundedSender<TurnRecord>) -> Self {
+    pub fn new(config: &Config, eval_tx: tokio::sync::mpsc::UnboundedSender<TurnRecord>, grader_config: GraderConfig) -> Self {
         let client = Client::builder()
             .no_proxy()
             .build()
@@ -51,6 +52,7 @@ impl AppState {
             counter: std::sync::atomic::AtomicU64::new(1),
             eval_tx,
             log_dir: config.log_dir.clone(),
+            grader_config,
         }
     }
 }

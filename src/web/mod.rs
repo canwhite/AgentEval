@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::eval::types::SessionView;
+use crate::grader;
 use crate::grader::types::GradeReport;
 use crate::proxy::AppState;
 
@@ -131,6 +132,38 @@ pub async fn get_session(
     Ok(Json(serde_json::json!({
         "view": view,
         "grade": grade,
+    })))
+}
+
+pub async fn grade_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !is_safe_session_id(&session_id) {
+        return Err((StatusCode::BAD_REQUEST, "invalid session_id".into()));
+    }
+
+    let view_path = format!("{}/{}.view.json", state.log_dir, session_id);
+    let grade_path = format!("{}/{}.grade.json", state.log_dir, session_id);
+
+    let view_json =
+        std::fs::read_to_string(&view_path).map_err(|_| (StatusCode::NOT_FOUND, "session not found".into()))?;
+    let view: SessionView = serde_json::from_str(&view_json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to parse view: {}", e)))?;
+
+    let report = grader::run_pipeline(&view, &state.grader_config).await;
+
+    // Write grade.json
+    if let Ok(json) = serde_json::to_string_pretty(&report) {
+        if let Ok(mut file) = std::fs::File::create(&grade_path) {
+            use std::io::Write;
+            file.write_all(json.as_bytes()).ok();
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "view": view,
+        "grade": report,
     })))
 }
 

@@ -8,7 +8,7 @@ mod web;
 use std::path::Path;
 use std::sync::Arc;
 
-use axum::{routing::{any, get}, Router};
+use axum::{routing::{any, get, post}, Router};
 
 use config::{Config, GraderConfig};
 use eval::types::TurnRecord;
@@ -23,7 +23,9 @@ async fn main() {
     let (eval_tx, eval_rx) = tokio::sync::mpsc::unbounded_channel::<TurnRecord>();
     let log_dir = config.log_dir.clone();
 
-    let state = Arc::new(AppState::new(&config, eval_tx));
+    let grader_config = GraderConfig::load(&config.upstream);
+
+    let state = Arc::new(AppState::new(&config, eval_tx, grader_config.clone()));
 
     // 从 trace_file 中提取 jsonl stem，用于 session 文件命名
     let jsonl_stem = Path::new(&state.trace_file)
@@ -31,8 +33,6 @@ async fn main() {
         .and_then(|s| s.to_str())
         .unwrap_or("session_unknown")
         .to_string();
-
-    let grader_config = GraderConfig::load(&config.upstream);
 
     // Spawn eval consumer: 异步构建结构化会话视图 + 评分
     tokio::spawn(eval::run(eval_rx, log_dir, jsonl_stem, grader_config));
@@ -42,6 +42,7 @@ async fn main() {
             .route("/dashboard/", get(web::serve_ui))
             .route("/dashboard/api/sessions", get(web::list_sessions))
             .route("/dashboard/api/sessions/{session_id}", get(web::get_session))
+            .route("/dashboard/api/sessions/{session_id}/grade", post(web::grade_session))
             .fallback(any(proxy::handler))
             .with_state(state)
     } else {

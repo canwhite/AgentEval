@@ -234,7 +234,7 @@ async function renderDashboard() {
       }
       html += '</div></td>';
     } else {
-      html += '<td><span style="color:var(--text2)">grading...</span></td><td class="hide-mobile"></td>';
+      html += '<td><button class="btn btn-sm" onclick="event.stopPropagation();triggerGrade(\'' + escAttr(s.session_id) + '\').then(function(){renderDashboard();})">Grade</button></td><td class="hide-mobile"></td>';
     }
     html += '</tr>';
   }
@@ -300,7 +300,11 @@ async function renderDetail(sessionId) {
       html += '</div>';
     }
   } else {
-    html += '<div class="card" style="text-align:center;color:var(--text2);padding:20px">Grading in progress...</div>';
+    html += '<div class="card" style="text-align:center;padding:20px">';
+    html += '<p style="color:var(--text2);margin-bottom:12px">Not yet graded</p>';
+    html += '<button class="btn" onclick="triggerGrade(\'' + escAttr(sessionId) + '\')">Grade Now</button>';
+    html += '<p id="grade-status" style="color:var(--text2);margin-top:8px;font-size:0.85rem"></p>';
+    html += '</div>';
   }
 
   // Conversation
@@ -383,6 +387,36 @@ function toggleAutoRefresh(on) {
   } else {
     if (window._autoInterval) clearInterval(window._autoInterval);
     window._autoInterval = null;
+  }
+}
+
+// ── Grade trigger ──
+async function triggerGrade(sessionId, btn) {
+  if (!btn) btn = event.target;
+  var status = document.getElementById('grade-status');
+  btn.disabled = true;
+  btn.textContent = 'Grading...';
+  if (status) status.textContent = '';
+  try {
+    var resp = await fetch(API + '/sessions/' + encodeURIComponent(sessionId) + '/grade', { method: 'POST' });
+    if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+    var data = await resp.json();
+    if (data.grade) {
+      if (status) {
+        status.textContent = 'Done! Overall: ' + data.grade.overall.toFixed(2);
+        status.style.color = scoreColor(data.grade.overall);
+        renderDetail(sessionId);
+      } else {
+        renderDashboard();
+      }
+    }
+  } catch (e) {
+    if (status) {
+      status.textContent = 'Failed: ' + e.message;
+      status.style.color = 'var(--red)';
+    }
+    btn.disabled = false;
+    btn.textContent = 'Grade Now';
   }
 }
 
