@@ -3,11 +3,12 @@ mod eval;
 mod format;
 mod grader;
 mod proxy;
+mod web;
 
 use std::path::Path;
 use std::sync::Arc;
 
-use axum::{routing::any, Router};
+use axum::{routing::{any, get}, Router};
 
 use config::{Config, GraderConfig};
 use eval::types::TurnRecord;
@@ -36,14 +37,26 @@ async fn main() {
     // Spawn eval consumer: 异步构建结构化会话视图 + 评分
     tokio::spawn(eval::run(eval_rx, log_dir, jsonl_stem, grader_config));
 
-    let app = Router::new()
-        .fallback(any(proxy::handler))
-        .with_state(state);
+    let app = if config.ui_enabled {
+        Router::new()
+            .route("/dashboard/", get(web::serve_ui))
+            .route("/dashboard/api/sessions", get(web::list_sessions))
+            .route("/dashboard/api/sessions/{session_id}", get(web::get_session))
+            .fallback(any(proxy::handler))
+            .with_state(state)
+    } else {
+        Router::new()
+            .fallback(any(proxy::handler))
+            .with_state(state)
+    };
 
     let addr = format!("127.0.0.1:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
 
     println!("listening http://{}  ->  {}", addr, config.upstream);
+    if config.ui_enabled {
+        println!("dashboard http://{}/dashboard/", addr);
+    }
 
     axum::serve(listener, app).await.unwrap();
 }

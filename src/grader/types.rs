@@ -17,7 +17,7 @@ pub struct MetricsSnapshot {
     pub has_tool_error: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GradeReport {
     pub session_id: String,
     pub model: String,
@@ -28,7 +28,7 @@ pub struct GradeReport {
     pub overall: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DimensionScore {
     pub metric: String,
     pub score: f64,

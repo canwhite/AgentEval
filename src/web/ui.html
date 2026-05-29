@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentEval Dashboard</title>
+<style>
+:root {
+  --bg: #1a1a2e;
+  --surface: #16213e;
+  --surface2: #0f3460;
+  --text: #e0e0e0;
+  --text2: #a0a0b0;
+  --accent: #e94560;
+  --green: #00c853;
+  --yellow: #ffd600;
+  --orange: #ff9100;
+  --red: #ff1744;
+  --blue: #448aff;
+  --purple: #b388ff;
+  --teal: #1de9b6;
+  --radius: 6px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Layout */
+header { background: var(--surface); border-bottom: 1px solid rgba(255,255,255,0.06); padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+header h1 { font-size: 1.2rem; font-weight: 600; }
+header .actions { display: flex; gap: 10px; align-items: center; }
+.container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+/* Buttons */
+.btn { padding: 7px 16px; border: 1px solid rgba(255,255,255,0.15); border-radius: var(--radius); background: var(--surface2); color: var(--text); cursor: pointer; font-size: 0.85rem; transition: background 0.2s; }
+.btn:hover { background: rgba(255,255,255,0.1); }
+.btn-sm { padding: 4px 10px; font-size: 0.78rem; }
+
+/* Score colors */
+.score-high { color: var(--green); }
+.score-good { color: #64dd17; }
+.score-mid { color: var(--yellow); }
+.score-low { color: var(--orange); }
+.score-bad { color: var(--red); }
+
+/* Bar */
+.bar { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.bar-inner { height: 100%; border-radius: 4px; transition: width 0.3s; }
+.bar-inner.high { background: var(--green); }
+.bar-inner.good { background: #64dd17; }
+.bar-inner.mid { background: var(--yellow); }
+.bar-inner.low { background: var(--orange); }
+.bar-inner.bad { background: var(--red); }
+
+.bar-lg { height: 14px; border-radius: 7px; }
+.bar-lg .bar-inner { border-radius: 7px; }
+
+/* Card */
+.card { background: var(--surface); border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.05); }
+
+/* Table */
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.05); }
+th { color: var(--text2); font-weight: 500; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px; }
+tr:hover td { background: rgba(255,255,255,0.02); }
+.session-link { cursor: pointer; color: var(--blue); font-family: monospace; font-size: 0.88rem; }
+.session-link:hover { text-decoration: underline; }
+
+/* Dims mini */
+.dim-mini { display: flex; gap: 6px; flex-wrap: wrap; }
+.dim-mini span { font-size: 0.72rem; padding: 2px 6px; border-radius: 3px; background: rgba(255,255,255,0.06); white-space: nowrap; }
+
+/* Detail */
+.back-link { color: var(--text2); cursor: pointer; font-size: 0.9rem; }
+.back-link:hover { color: var(--text); }
+.dim-card { margin-bottom: 10px; }
+.dim-card .dim-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.dim-card .dim-name { font-weight: 600; }
+.dim-card .dim-source { font-size: 0.75rem; padding: 2px 8px; border-radius: 3px; background: rgba(255,255,255,0.06); color: var(--text2); }
+.dim-card .dim-reason { font-size: 0.85rem; color: var(--text2); margin-top: 6px; line-height: 1.5; }
+.dim-card .dim-details { font-size: 0.78rem; color: var(--text2); margin-top: 4px; font-family: monospace; }
+.dim-card .dim-weight { font-size: 0.75rem; color: var(--text2); margin-top: 4px; }
+.overall-display { text-align: center; padding: 20px; }
+.overall-display .big-score { font-size: 3rem; font-weight: 700; }
+.overall-display .big-label { color: var(--text2); font-size: 0.9rem; margin-top: 4px; }
+.meta { display: flex; gap: 20px; flex-wrap: wrap; font-size: 0.85rem; color: var(--text2); margin-bottom: 20px; }
+
+/* Turn */
+.turn { margin-bottom: 8px; }
+.turn-header { padding: 10px 14px; background: rgba(255,255,255,0.03); border-radius: var(--radius) var(--radius) 0 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+.turn-header:hover { background: rgba(255,255,255,0.06); }
+.turn-body { padding: 10px 14px; background: rgba(0,0,0,0.15); border-radius: 0 0 var(--radius) var(--radius); }
+.step { padding: 8px 10px; margin-bottom: 6px; border-radius: 4px; background: rgba(255,255,255,0.03); border-left: 3px solid transparent; }
+.step.reasoning { border-left-color: var(--purple); }
+.step.text { border-left-color: var(--blue); }
+.step.tool_call { border-left-color: var(--orange); }
+.step.tool_result { border-left-color: var(--teal); }
+.step-badge { display: inline-block; font-size: 0.7rem; padding: 2px 7px; border-radius: 3px; margin-right: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.badge-reasoning { background: rgba(179,136,255,0.2); color: var(--purple); }
+.badge-text { background: rgba(68,138,255,0.2); color: var(--blue); }
+.badge-tool { background: rgba(255,145,0,0.2); color: var(--orange); }
+.badge-result { background: rgba(29,233,182,0.2); color: var(--teal); }
+.step-content { font-size: 0.85rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text2); }
+.user-input { font-size: 0.85rem; color: var(--text); padding: 6px 10px; background: rgba(255,255,255,0.04); border-radius: 4px; margin-bottom: 4px; }
+.user-input::before { content: "> "; color: var(--accent); font-weight: bold; }
+.empty-state { text-align: center; padding: 60px 20px; color: var(--text2); }
+.empty-state p { margin-top: 10px; font-size: 0.95rem; }
+.toggle-label { font-size: 0.8rem; color: var(--text2); cursor: pointer; user-select: none; display: flex; align-items: center; gap: 4px; }
+.toggle-label input { margin: 0; }
+
+/* Loading */
+.loading { text-align: center; padding: 40px; color: var(--text2); }
+
+/* Responsive */
+@media (max-width: 800px) {
+  .container { padding: 12px; }
+  table { font-size: 0.82rem; }
+  th, td { padding: 8px 6px; }
+  .hide-mobile { display: none; }
+  .overall-display .big-score { font-size: 2.2rem; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="page-title">AgentEval Dashboard</h1>
+  <div class="actions" id="header-actions"></div>
+</header>
+
+<div class="container" id="content"></div>
+
+<script>
+const API = '/dashboard/api';
+
+function scoreClass(v) {
+  if (v >= 0.85) return 'high';
+  if (v >= 0.7) return 'good';
+  if (v >= 0.5) return 'mid';
+  if (v >= 0.3) return 'low';
+  return 'bad';
+}
+
+function scoreColor(v) {
+  if (v >= 0.85) return 'var(--green)';
+  if (v >= 0.7) return '#64dd17';
+  if (v >= 0.5) return 'var(--yellow)';
+  if (v >= 0.3) return 'var(--orange)';
+  return 'var(--red)';
+}
+
+function barHtml(val, cls) {
+  var sc = cls || scoreClass(val);
+  return '<div class="bar"><div class="bar-inner ' + sc + '" style="width:' + (val * 100).toFixed(0) + '%"></div></div>';
+}
+
+function barHtmlLg(val) {
+  var sc = scoreClass(val);
+  return '<div class="bar bar-lg"><div class="bar-inner ' + sc + '" style="width:' + (val * 100).toFixed(0) + '%"></div></div>';
+}
+
+function formatMs(ms) { return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms'; }
+
+// ── Router ──
+function route() {
+  var params = new URLSearchParams(window.location.search);
+  var view = params.get('view') || 'dashboard';
+  var sessionId = params.get('session');
+
+  if (view === 'detail' && sessionId) {
+    renderDetail(sessionId);
+  } else {
+    renderDashboard();
+  }
+}
+
+function navTo(params) {
+  var qs = new URLSearchParams(params).toString();
+  window.history.pushState({}, '', '?' + qs);
+  route();
+}
+
+// ── Dashboard ──
+async function renderDashboard() {
+  document.getElementById('page-title').textContent = 'AgentEval Dashboard';
+  document.getElementById('header-actions').innerHTML =
+    '<label class="toggle-label"><input type="checkbox" id="auto-refresh" onchange="toggleAutoRefresh(this.checked)"> auto</label>' +
+    '<button class="btn" onclick="renderDashboard()">Refresh</button>';
+
+  document.getElementById('content').innerHTML = '<div class="loading">Loading sessions...</div>';
+
+  var autoEl = document.getElementById('auto-refresh');
+  if (autoEl && window._autoInterval) autoEl.checked = true;
+
+  try {
+    var resp = await fetch(API + '/sessions');
+    var data = await resp.json();
+    var sessions = data.sessions || [];
+  } catch (e) {
+    document.getElementById('content').innerHTML = '<div class="empty-state"><h2>Error</h2><p>Failed to load sessions: ' + e.message + '</p></div>';
+    return;
+  }
+
+  if (sessions.length === 0) {
+    document.getElementById('content').innerHTML = '<div class="empty-state"><h2>No sessions yet</h2><p>Start the proxy and send requests to see evaluation results here.</p></div>';
+    return;
+  }
+
+  var graded = sessions.filter(function(s) { return s.graded; });
+  var pending = sessions.filter(function(s) { return !s.graded; });
+  var avgOverall = graded.length ? (graded.reduce(function(a,b) { return a + b.overall; }, 0) / graded.length) : 0;
+
+  var html = '<div style="margin-bottom:20px;color:var(--text2);font-size:0.9rem">'
+    + sessions.length + ' sessions total';
+  if (graded.length) html += ' &middot; ' + graded.length + ' graded &middot; avg overall: <b style="color:' + scoreColor(avgOverall) + '">' + (avgOverall*100).toFixed(1) + '%</b>';
+  if (pending.length) html += ' &middot; ' + pending.length + ' pending';
+  html += '</div>';
+
+  html += '<div class="card"><table><thead><tr><th>Session</th><th>Model</th><th>Turns</th><th>Overall</th><th>Dimensions</th></tr></thead><tbody>';
+
+  for (var i = 0; i < sessions.length; i++) {
+    var s = sessions[i];
+    html += '<tr>';
+    html += '<td><span class="session-link" onclick="navTo({view:\'detail\',session:\'' + escAttr(s.session_id) + '\'})">' + escHtml(s.session_id) + '</span></td>';
+    html += '<td class="hide-mobile">' + escHtml(s.model) + '</td>';
+    html += '<td>' + s.turn_count + '</td>';
+    if (s.graded) {
+      html += '<td><b class="' + scoreClass(s.overall) + '">' + s.overall.toFixed(2) + '</b> ' + barHtml(s.overall) + '</td>';
+      html += '<td class="hide-mobile"><div class="dim-mini">';
+      for (var j = 0; j < s.dimensions.length; j++) {
+        var d = s.dimensions[j];
+        html += '<span title="' + escAttr(d.metric) + ': ' + d.score.toFixed(2) + '">' + escHtml(abbrevMetric(d.metric)) + ' ' + d.score.toFixed(2) + '</span>';
+      }
+      html += '</div></td>';
+    } else {
+      html += '<td><span style="color:var(--text2)">grading...</span></td><td class="hide-mobile"></td>';
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+  document.getElementById('content').innerHTML = html;
+}
+
+function abbrevMetric(m) {
+  var map = { task_completion: 'TC', tool_efficiency: 'TE', response_quality: 'RQ', performance: 'PF' };
+  return map[m] || m;
+}
+
+// ── Detail ──
+async function renderDetail(sessionId) {
+  document.getElementById('page-title').textContent = 'Session Detail';
+  document.getElementById('header-actions').innerHTML = '';
+  document.getElementById('content').innerHTML = '<div class="loading">Loading session...</div>';
+
+  try {
+    var resp = await fetch(API + '/sessions/' + encodeURIComponent(sessionId));
+    if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+    var data = await resp.json();
+  } catch (e) {
+    document.getElementById('content').innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + e.message + '</p><p><a href="javascript:navTo({})">Back to dashboard</a></p></div>';
+    return;
+  }
+
+  var view = data.view;
+  var grade = data.grade;
+  var sessionTitle = view.session_id || sessionId;
+
+  var html = '<a class="back-link" href="javascript:navTo({})">&larr; Back to dashboard</a>';
+  html += '<h2 style="margin-top:12px">' + escHtml(sessionTitle) + '</h2>';
+  html += '<div class="meta">';
+  html += '<span>Model: <b>' + escHtml(view.model) + '</b></span>';
+  html += '<span>Turns: <b>' + view.turns.length + '</b></span>';
+  if (view.jsonl_ids && view.jsonl_ids.length) {
+    html += '<span>JSONL IDs: ' + escHtml(JSON.stringify(view.jsonl_ids)) + '</span>';
+  }
+  html += '</div>';
+
+  // Grade section
+  if (grade) {
+    var overallScore = grade.overall;
+    html += '<div class="card overall-display">';
+    html += '<div class="big-score ' + scoreClass(overallScore) + '">' + overallScore.toFixed(2) + '</div>';
+    html += '<div class="big-label">Overall Score</div>';
+    html += barHtmlLg(overallScore);
+    html += '</div>';
+
+    html += '<h3 style="margin-bottom:10px">Dimension Scores</h3>';
+    for (var i = 0; i < grade.dimensions.length; i++) {
+      var d = grade.dimensions[i];
+      html += '<div class="card dim-card">';
+      html += '<div class="dim-header">';
+      html += '<span class="dim-name">' + escHtml(d.metric) + ' <span class="dim-source">' + escHtml(d.source) + '</span></span>';
+      html += '<span style="font-size:1.2rem;font-weight:700;color:' + scoreColor(d.score) + '">' + d.score.toFixed(2) + '</span>';
+      html += '</div>';
+      html += barHtml(d.score);
+      if (d.reason) html += '<div class="dim-reason">' + escHtml(d.reason) + '</div>';
+      if (d.details && Object.keys(d.details).length) html += '<div class="dim-details">' + escHtml(JSON.stringify(d.details, null, 2)) + '</div>';
+      html += '<div class="dim-weight">weight: ' + d.weight.toFixed(2) + '</div>';
+      html += '</div>';
+    }
+  } else {
+    html += '<div class="card" style="text-align:center;color:var(--text2);padding:20px">Grading in progress...</div>';
+  }
+
+  // Conversation
+  html += '<h3 style="margin-bottom:10px;margin-top:20px">Conversation</h3>';
+  if (view.turns.length === 0) {
+    html += '<div class="card" style="text-align:center;color:var(--text2)">No turns</div>';
+  } else {
+    for (var t = 0; t < view.turns.length; t++) {
+      var turn = view.turns[t];
+      html += '<div class="turn card">';
+      var duration = turn.duration_ms ? ' [' + formatMs(turn.duration_ms) + ']' : '';
+      var tokens = turn.usage ? ' [' + turn.usage.input_tokens + ' in / ' + turn.usage.output_tokens + ' out]' : '';
+      html += '<div class="turn-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">';
+      html += '<span>Turn ' + turn.turn_id + '<span style="color:var(--text2);font-size:0.8rem">' + duration + tokens + '</span></span>';
+      html += '<span style="color:var(--text2);font-size:0.8rem">' + turn.steps.length + ' steps</span>';
+      html += '</div>';
+      html += '<div class="turn-body">';
+
+      // User inputs
+      if (turn.user_input && turn.user_input.length) {
+        for (var ui = 0; ui < turn.user_input.length; ui++) {
+          html += '<div class="user-input">' + escHtml(turn.user_input[ui]) + '</div>';
+        }
+      }
+      // Tool results (submitted this turn)
+      if (turn.tool_results && turn.tool_results.length) {
+        for (var tr = 0; tr < turn.tool_results.length; tr++) {
+          var trr = turn.tool_results[tr];
+          html += '<div class="step tool_result"><span class="step-badge badge-result">Result</span><span style="color:var(--text2);font-size:0.75rem">' + escHtml(trr.call_id) + '</span><div class="step-content">' + escHtml(truncate(trr.content, 500)) + '</div></div>';
+        }
+      }
+      // Steps
+      for (var si = 0; si < turn.steps.length; si++) {
+        var step = turn.steps[si];
+        if (step.type === 'reasoning') {
+          html += '<div class="step reasoning"><span class="step-badge badge-reasoning">Reasoning</span><div class="step-content">' + escHtml(truncate(step.content, 1000)) + '</div></div>';
+        } else if (step.type === 'text') {
+          html += '<div class="step text"><span class="step-badge badge-text">Text</span><div class="step-content">' + escHtml(step.content) + '</div></div>';
+        } else if (step.type === 'tool_call') {
+          html += '<div class="step tool_call"><span class="step-badge badge-tool">ToolCall</span><span style="color:var(--text)">' + escHtml(step.name) + '</span> <span style="color:var(--text2);font-size:0.78rem">' + escHtml(truncate(JSON.stringify(step.arguments), 200)) + '</span>';
+          if (step.result) {
+            html += '<div style="margin-top:4px;font-size:0.82rem;color:var(--text2)"><span class="step-badge badge-result" style="font-size:0.65rem">Result</span>' + escHtml(truncate(step.result.content, 500)) + '</div>';
+          }
+          html += '</div>';
+        }
+      }
+      html += '</div></div>';
+    }
+  }
+
+  document.getElementById('content').innerHTML = html;
+}
+
+// ── Utils ──
+function escHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function escAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function truncate(s, maxLen) {
+  if (!s || s.length <= maxLen) return s;
+  return s.slice(0, maxLen) + '...';
+}
+
+// ── Auto-refresh ──
+window._autoInterval = null;
+
+function toggleAutoRefresh(on) {
+  if (on) {
+    window._autoInterval = setInterval(function() {
+      var params = new URLSearchParams(window.location.search);
+      if (!params.get('view') || params.get('view') === 'dashboard') {
+        renderDashboard();
+      }
+    }, 10000);
+  } else {
+    if (window._autoInterval) clearInterval(window._autoInterval);
+    window._autoInterval = null;
+  }
+}
+
+// ── Init ──
+window.addEventListener('popstate', route);
+route();
+</script>
+</body>
+</html>

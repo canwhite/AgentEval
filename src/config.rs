@@ -8,6 +8,7 @@ pub struct Config {
     pub port: u16,
     pub log_dir: String,
     pub verbose: bool,
+    pub ui_enabled: bool,
 }
 
 impl Config {
@@ -36,7 +37,11 @@ impl Config {
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false);
 
-        Self { upstream, port, log_dir, verbose }
+        let ui_enabled = env::var("AGENTEVAL_UI_ENABLED")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(true);
+
+        Self { upstream, port, log_dir, verbose, ui_enabled }
     }
 }
 

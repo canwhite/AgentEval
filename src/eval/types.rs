@@ -26,15 +26,15 @@ pub struct SessionView {
 pub struct Turn {
     pub turn_id: u64,
     /// 本轮新增的 user 消息文本
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_input: Vec<String>,
     /// 本轮提交的 tool 执行结果
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_results: Vec<ToolResult>,
     /// 模型产出的步骤序列
     pub steps: Vec<Step>,
     /// token 用量
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     /// 耗时（毫秒）
     pub duration_ms: u64,
@@ -53,7 +53,7 @@ pub enum Step {
         name: String,
         arguments: Value,
         /// 跨 turn 回填的执行结果，配对上之前为 null
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         result: Option<ToolResult>,
     },
 }

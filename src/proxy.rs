@@ -23,8 +23,8 @@ pub struct AppState {
     pub trace_lock: Mutex<()>,
     pub verbose: bool,
     pub counter: std::sync::atomic::AtomicU64,
-    //单拿一个sender
     pub eval_tx: tokio::sync::mpsc::UnboundedSender<TurnRecord>,
+    pub log_dir: String,
 }
 
 
@@ -50,6 +50,7 @@ impl AppState {
             verbose: config.verbose,
             counter: std::sync::atomic::AtomicU64::new(1),
             eval_tx,
+            log_dir: config.log_dir.clone(),
         }
     }
 }
