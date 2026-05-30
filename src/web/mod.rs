@@ -13,6 +13,7 @@ use crate::diagnose;
 use crate::eval::types::SessionView;
 use crate::grader;
 use crate::grader::types::GradeReport;
+use crate::probe;
 use crate::proxy::AppState;
 
 pub async fn serve_ui() -> Html<&'static str> {
@@ -30,6 +31,16 @@ struct SessionSummary {
     dimensions: Vec<DimensionSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     diagnose_summary: Option<DiagnoseSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe_summary: Option<ProbeSummary>,
+}
+
+#[derive(Serialize)]
+struct ProbeSummary {
+    total_findings: usize,
+    high: usize,
+    medium: usize,
+    low: usize,
 }
 
 #[derive(Serialize)]
@@ -89,6 +100,7 @@ pub async fn list_sessions(
                     })
                     .collect();
                 let diag = read_diagnose_summary(&state.log_dir, sid);
+                let prb = read_probe_summary(&state.log_dir, sid);
                 summaries.push(SessionSummary {
                     session_id: sid.clone(),
                     model: report.model,
@@ -98,6 +110,7 @@ pub async fn list_sessions(
                     graded: true,
                     dimensions: dims,
                     diagnose_summary: diag,
+                    probe_summary: prb,
                 });
                 continue;
             }
@@ -107,6 +120,7 @@ pub async fn list_sessions(
         if let Ok(view_json) = std::fs::read_to_string(&view_path) {
             if let Ok(view) = serde_json::from_str::<SessionView>(&view_json) {
                 let diag = read_diagnose_summary(&state.log_dir, sid);
+                let prb = read_probe_summary(&state.log_dir, sid);
                 summaries.push(SessionSummary {
                     session_id: sid.clone(),
                     model: view.model,
@@ -116,6 +130,7 @@ pub async fn list_sessions(
                     graded: false,
                     dimensions: Vec::new(),
                     diagnose_summary: diag,
+                    probe_summary: prb,
                 });
             }
         }
@@ -198,6 +213,19 @@ fn read_diagnose_summary(log_dir: &str, session_id: &str) -> Option<DiagnoseSumm
     })
 }
 
+fn read_probe_summary(log_dir: &str, session_id: &str) -> Option<ProbeSummary> {
+    let path = format!("{}/{}.probe.json", log_dir, session_id);
+    let json = std::fs::read_to_string(&path).ok()?;
+    let report: probe::types::ProbeReport = serde_json::from_str(&json).ok()?;
+    let summary = probe::types::ProbeSummary::from_report(&report);
+    Some(ProbeSummary {
+        total_findings: summary.total_findings,
+        high: summary.high,
+        medium: summary.medium,
+        low: summary.low,
+    })
+}
+
 // ── Diagnose handlers ──
 
 pub async fn diagnose_session(
@@ -254,4 +282,35 @@ pub async fn get_raw_jsonl(
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
 
     Ok(Json(serde_json::json!({ "entries": entries })))
+}
+
+// ── Probe handlers ──
+
+pub async fn probe_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !is_safe_session_id(&session_id) {
+        return Err((StatusCode::BAD_REQUEST, "invalid session_id".into()));
+    }
+
+    let report = probe::run(&session_id, &state.log_dir, &state.probe_config, &state.grader_config)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(serde_json::to_value(&report).unwrap_or_default()))
+}
+
+pub async fn get_probe(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !is_safe_session_id(&session_id) {
+        return Err((StatusCode::BAD_REQUEST, "invalid session_id".into()));
+    }
+
+    let report = probe::read_existing(&session_id, &state.log_dir)
+        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+
+    Ok(Json(serde_json::to_value(&report).unwrap_or_default()))
 }

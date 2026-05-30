@@ -3,6 +3,7 @@ mod diagnose;
 mod eval;
 mod format;
 mod grader;
+mod probe;
 mod proxy;
 mod web;
 
@@ -11,16 +12,20 @@ use std::sync::Arc;
 
 use axum::{routing::{any, get, post}, Router};
 
-use config::{Config, GraderConfig};
+use config::{Config, GraderConfig, ProbeConfig};
 use eval::types::TurnRecord;
 use proxy::AppState;
 
 #[tokio::main]
 async fn main() {
-    // CLI: diagnose subcommand
+    // CLI: diagnose / probe subcommands
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 2 && args[1] == "diagnose" {
         run_diagnose_cli(&args);
+        return;
+    }
+    if args.len() >= 2 && args[1] == "probe" {
+        run_probe_cli(&args).await;
         return;
     }
 
@@ -32,8 +37,9 @@ async fn main() {
     let log_dir = config.log_dir.clone();
 
     let grader_config = GraderConfig::load(&config.upstream);
+    let probe_config = ProbeConfig::load();
 
-    let state = Arc::new(AppState::new(&config, eval_tx, grader_config.clone()));
+    let state = Arc::new(AppState::new(&config, eval_tx, grader_config.clone(), probe_config));
 
     // 从 trace_file 中提取 jsonl stem，用于 session 文件命名
     let jsonl_stem = Path::new(&state.trace_file)
@@ -52,6 +58,7 @@ async fn main() {
             .route("/dashboard/api/sessions/{session_id}", get(web::get_session))
             .route("/dashboard/api/sessions/{session_id}/grade", post(web::grade_session))
             .route("/dashboard/api/sessions/{session_id}/diagnose", post(web::diagnose_session).get(web::get_diagnose))
+            .route("/dashboard/api/sessions/{session_id}/probe", post(web::probe_session).get(web::get_probe))
             .route("/dashboard/api/raw/{jsonl_stem}", get(web::get_raw_jsonl))
             .fallback(any(proxy::handler))
             .with_state(state)
@@ -137,6 +144,36 @@ fn run_diagnose_cli(args: &[String]) {
         },
         Err(e) => {
             eprintln!("Diagnose failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_probe_cli(args: &[String]) {
+    let session_id = match args.get(2) {
+        Some(id) => id.as_str(),
+        None => {
+            eprintln!("Usage: cargo run -- probe <session_id>");
+            std::process::exit(1);
+        }
+    };
+
+    let log_dir = std::env::var("AGENTEVAL_LOG_DIR").unwrap_or_else(|_| "./logs".to_string());
+    let probe_config = config::ProbeConfig::load();
+    let grader_config = config::GraderConfig::load("https://api.deepseek.com");
+
+    eprintln!("Running probe for session: {}", session_id);
+    eprintln!("Source project: {}", probe_config.source_project_dir);
+
+    match probe::run(session_id, &log_dir, &probe_config, &grader_config).await {
+        Ok(report) => {
+            println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+            if report.parse_error.is_some() {
+                eprintln!("Warning: probe output parse error, raw content preserved");
+            }
+        }
+        Err(e) => {
+            eprintln!("Probe failed: {}", e);
             std::process::exit(1);
         }
     }

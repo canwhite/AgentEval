@@ -309,7 +309,7 @@ function renderDashboardContent() {
   if (allSessions.length === 0) {
     html += '<div class="empty-state"><p>No sessions match this filter.</p></div>';
   } else {
-    html += '<div class="card"><table><thead><tr><th>Session</th><th>Model</th><th>Turns</th><th>Overall</th><th>Dimensions</th><th>Diag</th></tr></thead><tbody>';
+    html += '<div class="card"><table><thead><tr><th>Session</th><th>Model</th><th>Turns</th><th>Overall</th><th>Dimensions</th><th>Diag</th><th>Probe</th></tr></thead><tbody>';
 
     for (var i = 0; i < sessions.length; i++) {
       var s = sessions[i];
@@ -326,9 +326,11 @@ function renderDashboardContent() {
         }
         html += '</div></td>';
         html += '<td>' + diagCell(s) + '</td>';
+        html += '<td>' + probeCell(s) + '</td>';
       } else {
         html += '<td><button class="btn btn-sm" onclick="event.stopPropagation();triggerGrade(\'' + escAttr(s.session_id) + '\').then(function(){renderDashboard();})">Grade</button></td><td class="hide-mobile"></td>';
         html += '<td>' + diagCell(s) + '</td>';
+        html += '<td>' + probeCell(s) + '</td>';
       }
       html += '</tr>';
     }
@@ -430,6 +432,23 @@ async function renderDetail(sessionId) {
     html += '<button class="btn" onclick="triggerDiagnoseDetail(\'' + escAttr(sessionId) + '\')">\ud83d\udd0d Run Diagnosis</button>';
     html += '<span id="diag-status" style="color:var(--text2);margin-left:10px;font-size:0.85rem"></span>';
     html += '<div id="diag-result"></div>';
+    html += '</div>';
+  }
+
+  // Probe panel (loaded below diagnose panel)
+  var probeReport = await loadProbe(sessionId);
+  if (probeReport) {
+    html += renderProbePanel(probeReport, sessionId);
+  } else {
+    var hasDiag = diagReport && diagReport.issues && diagReport.issues.length > 0;
+    html += '<div class="diag-panel" style="margin-top:20px">';
+    if (hasDiag) {
+      html += '<button class="btn" onclick="triggerProbeDetail(\'' + escAttr(sessionId) + '\')">\ud83d\udd0d Run Probe</button>';
+      html += '<span id="probe-status" style="color:var(--text2);margin-left:10px;font-size:0.85rem"></span>';
+    } else {
+      html += '<span style="color:var(--text2);font-size:0.85rem">Run diagnosis first to enable probe</span>';
+    }
+    html += '<div id="probe-result"></div>';
     html += '</div>';
   }
 
@@ -669,6 +688,156 @@ async function triggerReDiagnose(sessionId) {
     panel.outerHTML = renderDiagnosePanel(report, sessionId);
   } catch (e) {
     panel.innerHTML = '<div class="card" style="text-align:center;padding:20px;color:var(--red)">Re-diagnose failed: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+// ── Probe ──
+window._probeCache = {};
+
+function probeCell(s) {
+  var showProbe = !s.graded || s.overall < 0.6;
+  if (!showProbe) return '';
+  var sid = s.session_id;
+
+  var summary = s.probe_summary || window._probeCache[sid];
+  if (summary === undefined) {
+    // Check if diagnose exists first — probe requires diagnose
+    var hasDiag = s.diagnose_summary && s.diagnose_summary.total_issues > 0;
+    if (!hasDiag) return '';
+    return '<span class="diag-badge diag-btn" onclick="event.stopPropagation();triggerProbe(\'' + escAttr(sid) + '\', this)">Probe</span>';
+  }
+  if (summary === null) {
+    return '<span class="diag-badge diag-pending">...</span>';
+  }
+  if (summary.total_findings > 0) {
+    var parts = [];
+    if (summary.high > 0) parts.push(summary.high + ' high');
+    if (summary.medium > 0) parts.push(summary.medium + ' med');
+    if (summary.low > 0) parts.push(summary.low + ' low');
+    return '<span class="diag-badge diag-issues" onclick="event.stopPropagation();navTo({view:\'detail\',session:\'' + escAttr(sid) + '\'})" title="' + parts.join(', ') + '">\ud83d\udd0d ' + summary.total_findings + ' findings</span>';
+  }
+  return '<span class="diag-badge diag-clean">\u2713 no findings</span>';
+}
+
+async function triggerProbe(sessionId, el) {
+  window._probeCache[sessionId] = null;
+  el.className = 'diag-badge diag-pending';
+  el.textContent = '...';
+  el.onclick = '';
+  try {
+    var resp = await fetch(API + '/sessions/' + encodeURIComponent(sessionId) + '/probe', { method: 'POST' });
+    if (!resp.ok) throw new Error(resp.status);
+    var report = await resp.json();
+    window._probeCache[sessionId] = { total_findings: (report.findings ? report.findings.length : 0) + (report.additional_findings ? report.additional_findings.length : 0), high: 0, medium: 0, low: 0 };
+  } catch (e) {
+    window._probeCache[sessionId] = { total_findings: 0, high: 0, medium: 0, low: 0 };
+  }
+  renderDashboard();
+}
+
+async function loadProbe(sessionId) {
+  try {
+    var resp = await fetch(API + '/sessions/' + encodeURIComponent(sessionId) + '/probe');
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+function renderProbePanel(report, sessionId) {
+  if (!report) return '';
+  var allFindings = (report.findings || []).concat(report.additional_findings || []);
+  var html = '<div class="diag-panel">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
+  html += '<h3 style="margin:0">\ud83d\udd0d Probe</h3>';
+  if (sessionId) {
+    html += '<button class="btn btn-sm" onclick="event.stopPropagation();triggerReProbe(\'' + escAttr(sessionId) + '\')">\ud83d\udd04 Re-probe</button>';
+  }
+  html += '</div>';
+  html += '<div class="card">';
+
+  if (allFindings.length === 0) {
+    html += '<div style="text-align:center;padding:16px;color:var(--green)">\u2713 No findings</div>';
+  } else {
+    html += '<div style="margin-bottom:12px;font-size:0.9rem;color:var(--text2)">';
+    html += '\ud83d\udd0d ' + allFindings.length + ' findings';
+    var high = allFindings.filter(function(f) { return f.confidence === 'high'; }).length;
+    var med = allFindings.filter(function(f) { return f.confidence === 'medium'; }).length;
+    var low = allFindings.filter(function(f) { return f.confidence === 'low'; }).length;
+    if (high > 0) html += ' (' + high + ' high';
+    if (med > 0) html += (high > 0 ? ', ' : ' (') + med + ' medium';
+    if (low > 0) html += ((high > 0 || med > 0) ? ', ' : ' (') + low + ' low';
+    if (high > 0 || med > 0 || low > 0) html += ')';
+    html += '</div>';
+
+    for (var i = 0; i < allFindings.length; i++) {
+      var f = allFindings[i];
+      var sevClass = f.confidence === 'high' ? 'sev-error' : (f.confidence === 'medium' ? 'sev-warn' : 'sev-info');
+      var icon = f.confidence === 'high' ? '\ud83d\udd34' : (f.confidence === 'medium' ? '\ud83d\udfe1' : '\ud83d\udd35');
+      html += '<div class="diag-issue-card ' + sevClass + '">';
+      html += '<div class="diag-issue-title">' + icon + ' <span class="diag-issue-cat">' + escHtml(f.category || 'General') + '</span> ' + escHtml(f.issue_title || 'Finding') + '</div>';
+      html += '<div class="diag-issue-detail"><b>Root cause:</b> ' + escHtml(f.root_cause || '') + '</div>';
+      if (f.recommendation) {
+        html += '<div class="diag-issue-detail" style="margin-top:4px"><b>Recommendation:</b> ' + escHtml(f.recommendation) + '</div>';
+      }
+      if (f.affected_files && f.affected_files.length) {
+        html += '<div class="diag-issue-loc">Files: ' + escHtml(f.affected_files.join(', ')) + '</div>';
+      }
+      if (f.evidence) {
+        html += '<details class="diag-issue-evidence"><summary>Evidence</summary><div style="margin-top:4px">' + escHtml(f.evidence) + '</div></details>';
+      }
+      html += '</div>';
+    }
+  }
+
+  if (report.overall_assessment) {
+    html += '<div style="margin-top:10px;padding:10px;background:rgba(255,255,255,0.03);border-radius:4px;font-size:0.85rem;color:var(--text2)">';
+    html += '<b>Overall:</b> ' + escHtml(report.overall_assessment);
+    html += '</div>';
+  }
+  if (report.parse_error) {
+    html += '<div style="margin-top:10px;padding:10px;background:rgba(255,23,68,0.1);border-radius:4px;font-size:0.82rem;color:var(--red)">';
+    html += 'Parse error: LLM output could not be parsed as JSON. Raw output preserved.';
+    html += '</div>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+async function triggerProbeDetail(sessionId) {
+  var btn = event.target;
+  var status = document.getElementById('probe-status');
+  var result = document.getElementById('probe-result');
+  btn.disabled = true;
+  btn.textContent = 'Probing...';
+  if (status) status.textContent = '';
+  try {
+    var resp = await fetch(API + '/sessions/' + encodeURIComponent(sessionId) + '/probe', { method: 'POST' });
+    if (!resp.ok) throw new Error(resp.status);
+    var report = await resp.json();
+    if (result) result.innerHTML = renderProbePanel(report, sessionId);
+    btn.style.display = 'none';
+    if (status) { status.textContent = 'Done!'; status.style.color = 'var(--green)'; }
+  } catch (e) {
+    if (status) { status.textContent = 'Failed: ' + e.message; status.style.color = 'var(--red)'; }
+    btn.disabled = false;
+    btn.textContent = '\ud83d\udd0d Run Probe';
+  }
+}
+
+async function triggerReProbe(sessionId) {
+  var panel = document.querySelector('.diag-panel:last-of-type');
+  if (!panel) return;
+  panel.innerHTML = '<div class="card" style="text-align:center;padding:20px;color:var(--text2)">Re-probing...</div>';
+  try {
+    var resp = await fetch(API + '/sessions/' + encodeURIComponent(sessionId) + '/probe', { method: 'POST' });
+    if (!resp.ok) throw new Error(resp.status);
+    var report = await resp.json();
+    window._probeCache[sessionId] = { total_findings: (report.findings ? report.findings.length : 0) + (report.additional_findings ? report.additional_findings.length : 0), high: 0, medium: 0, low: 0 };
+    panel.outerHTML = renderProbePanel(report, sessionId);
+  } catch (e) {
+    panel.innerHTML = '<div class="card" style="text-align:center;padding:20px;color:var(--red)">Re-probe failed: ' + escHtml(e.message) + '</div>';
   }
 }
 

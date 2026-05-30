@@ -71,3 +71,17 @@ impl GraderConfig {
         Self { judge_api_base, judge_model, judge_api_key }
     }
 }
+
+/// Probe agent 配置（LLM 复用 GraderConfig 的 judge 配置）
+#[derive(Clone)]
+pub struct ProbeConfig {
+    pub source_project_dir: String,
+}
+
+impl ProbeConfig {
+    pub fn load() -> Self {
+        dotenvy::dotenv().ok();
+        let source_project_dir = std::env::var("PROBE_SOURCE_PROJECT_DIR").unwrap_or_default();
+        Self { source_project_dir }
+    }
+}
