@@ -21,7 +21,7 @@ async fn main() {
     // CLI: diagnose / probe subcommands
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 2 && args[1] == "diagnose" {
-        run_diagnose_cli(&args);
+        run_diagnose_cli(&args).await;
         return;
     }
     if args.len() >= 2 && args[1] == "probe" {
@@ -79,7 +79,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-fn run_diagnose_cli(args: &[String]) {
+async fn run_diagnose_cli(args: &[String]) {
     let session_id = match args.get(2) {
         Some(id) => id.as_str(),
         None => {
@@ -95,8 +95,9 @@ fn run_diagnose_cli(args: &[String]) {
     };
 
     let log_dir = std::env::var("AGENTEVAL_LOG_DIR").unwrap_or_else(|_| "./logs".to_string());
+    let grader_config = config::GraderConfig::load("https://api.deepseek.com");
 
-    match diagnose::run(session_id, &log_dir) {
+    match diagnose::run(session_id, &log_dir, &grader_config).await {
         Ok(report) => match format {
             "terminal" => {
                 println!("=== Diagnose Report: {} ===", report.session_id);
@@ -132,6 +133,11 @@ fn run_diagnose_cli(args: &[String]) {
                             issue.location.turn_id,
                             issue.location.step_index
                         );
+                    }
+                    if let Some(ref summary) = report.llm_summary {
+                        println!();
+                        println!("--- LLM Summary ---");
+                        println!("{}", summary);
                     }
                 }
             }

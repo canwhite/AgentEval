@@ -5,6 +5,7 @@ use std::io::Write;
 
 use chrono::Utc;
 
+use crate::config::GraderConfig;
 use crate::eval::types::SessionView;
 use rules::JsonlEntry;
 use types::*;
@@ -14,7 +15,7 @@ use types::*;
 /// Reads `{log_dir}/{session_id}.view.json` and the corresponding `.jsonl`,
 /// runs all 10 rules, writes `{log_dir}/{session_id}.diagnose.json`,
 /// and returns the report.
-pub fn run(session_id: &str, log_dir: &str) -> Result<DiagnoseReport, String> {
+pub async fn run(session_id: &str, log_dir: &str, grader_config: &GraderConfig) -> Result<DiagnoseReport, String> {
     // 1. Read view.json
     let view_path = format!("{}/{}.view.json", log_dir, session_id);
     let view_json = std::fs::read_to_string(&view_path)
@@ -35,16 +36,20 @@ pub fn run(session_id: &str, log_dir: &str) -> Result<DiagnoseReport, String> {
     // 4. Run all rules
     let issues = rules::run_all(&view, &jsonl_entries);
 
-    // 5. Build report
+    // 5. Generate LLM summary (best-effort, skipped if no API key or no issues)
+    let llm_summary = summarize_issues(grader_config, &issues).await;
+
+    // 6. Build report
     let summary = DiagnoseSummary::from_issues(&issues);
     let report = DiagnoseReport {
         session_id: session_id.to_string(),
         diagnosed_at: Utc::now().to_rfc3339(),
         summary,
         issues,
+        llm_summary,
     };
 
-    // 6. Write .diagnose.json
+    // 7. Write .diagnose.json
     let diagnose_path = format!("{}/{}.diagnose.json", log_dir, session_id);
     let json = serde_json::to_string_pretty(&report)
         .map_err(|e| format!("failed to serialize report: {}", e))?;
@@ -63,6 +68,105 @@ pub fn read_existing(session_id: &str, log_dir: &str) -> Result<DiagnoseReport, 
         .map_err(|e| format!("diagnose not found for {}: {}", session_id, e))?;
     serde_json::from_str(&json)
         .map_err(|e| format!("failed to parse {}: {}", diagnose_path, e))
+}
+
+/// Call the judge LLM to generate a 2-3 sentence summary of diagnose issues.
+/// Returns None if no API key is configured, there are no issues, or the LLM call fails.
+async fn summarize_issues(config: &GraderConfig, issues: &[DiagnoseIssue]) -> Option<String> {
+    if config.judge_api_key.is_empty() || issues.is_empty() {
+        return None;
+    }
+
+    // Build prompt listing all issues
+    let mut issues_text = String::new();
+    for issue in issues {
+        issues_text.push_str(&format!(
+            "- [{:?}] {}: {}\n",
+            issue.severity, issue.title, issue.detail
+        ));
+    }
+
+    let prompt = format!(
+        "You are an agent evaluation expert. Below are issues found by automated \
+         diagnosis of an AI agent session. Write a 2-3 sentence summary of the key \
+         problems found and their likely impact on the session quality. Be concise.\n\n\
+         Issues:\n{}",
+        issues_text
+    );
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[diagnose] failed to build HTTP client for summary: {}", e);
+            return None;
+        }
+    };
+
+    let url = format!("{}/chat/completions", config.judge_api_base.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": config.judge_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 200,
+        "stream": false,
+    });
+
+    let resp = match client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.judge_api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[diagnose] LLM summary request failed: {}", e);
+            return None;
+        }
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        eprintln!("[diagnose] LLM summary API error {}: {}", status, text);
+        return None;
+    }
+
+    let text = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[diagnose] failed to read LLM summary response: {}", e);
+            return None;
+        }
+    };
+
+    // Parse choices[0].message.content
+    let v: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[diagnose] failed to parse LLM summary JSON: {}", e);
+            return None;
+        }
+    };
+
+    let content = v
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .map(|s| s.trim().to_string());
+
+    if let Some(ref summary) = content {
+        eprintln!("[diagnose] LLM summary generated ({} chars)", summary.len());
+    }
+
+    content
 }
 
 /// Read specific JSONL entries by their `id` fields.

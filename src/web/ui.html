@@ -501,6 +501,16 @@ async function renderDetail(sessionId) {
   }
 
   document.getElementById('content').innerHTML = html;
+
+  // Scroll to anchor if navigated from dashboard badge
+  var qp = new URLSearchParams(window.location.search);
+  var scrollTo = qp.get('scroll');
+  if (scrollTo) {
+    setTimeout(function() {
+      var el = document.getElementById(scrollTo === 'diag' ? 'diagnose-panel' : 'probe-panel');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 150);
+  }
 }
 
 // ── Utils ──
@@ -583,7 +593,7 @@ function diagCell(s) {
   }
   if (summary.total_issues > 0) {
     var label = '\u26a0 ' + summary.total_issues + ' issues';
-    return '<span class="diag-badge diag-issues" onclick="event.stopPropagation();navTo({view:\'detail\',session:\'' + escAttr(sid) + '\'})" title="' + summary.errors + ' errors, ' + summary.warnings + ' warnings">' + label + '</span>';
+    return '<span class="diag-badge diag-issues" onclick="event.stopPropagation();navTo({view:\'detail\',session:\'' + escAttr(sid) + '\',scroll:\'diag\'})" title="' + summary.errors + ' errors, ' + summary.warnings + ' warnings">' + label + '</span>';
   }
   return '<span class="diag-badge diag-clean">\u2713 clean</span>';
 }
@@ -616,7 +626,7 @@ async function loadDiagnose(sessionId) {
 
 function renderDiagnosePanel(report, sessionId) {
   if (!report || !report.issues) return '';
-  var html = '<div class="diag-panel">';
+  var html = '<div class="diag-panel" id="diagnose-panel">';
   html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
   html += '<h3 style="margin:0">\ud83d\udd0d Diagnosis</h3>';
   if (sessionId) {
@@ -624,6 +634,13 @@ function renderDiagnosePanel(report, sessionId) {
   }
   html += '</div>';
   html += '<div class="card">';
+
+  // LLM summary at top
+  if (report.llm_summary) {
+    html += '<div style="margin-bottom:14px;padding:10px 14px;background:rgba(68,138,255,0.08);border-left:3px solid var(--blue);border-radius:4px;font-size:0.88rem;line-height:1.5;color:var(--text)">';
+    html += '<b style="color:var(--blue)">AI Summary:</b> ' + escHtml(report.llm_summary);
+    html += '</div>';
+  }
 
   if (report.issues.length === 0) {
     html += '<div style="text-align:center;padding:16px;color:var(--green)">\u2713 No issues found</div>';
@@ -714,7 +731,7 @@ function probeCell(s) {
     if (summary.high > 0) parts.push(summary.high + ' high');
     if (summary.medium > 0) parts.push(summary.medium + ' med');
     if (summary.low > 0) parts.push(summary.low + ' low');
-    return '<span class="diag-badge diag-issues" onclick="event.stopPropagation();navTo({view:\'detail\',session:\'' + escAttr(sid) + '\'})" title="' + parts.join(', ') + '">\ud83d\udd0d ' + summary.total_findings + ' findings</span>';
+    return '<span class="diag-badge diag-issues" onclick="event.stopPropagation();navTo({view:\'detail\',session:\'' + escAttr(sid) + '\',scroll:\'probe\'})" title="' + parts.join(', ') + '">\ud83d\udd0d ' + summary.total_findings + ' findings</span>';
   }
   return '<span class="diag-badge diag-clean">\u2713 no findings</span>';
 }
@@ -748,7 +765,7 @@ async function loadProbe(sessionId) {
 function renderProbePanel(report, sessionId) {
   if (!report) return '';
   var allFindings = (report.findings || []).concat(report.additional_findings || []);
-  var html = '<div class="diag-panel">';
+  var html = '<div class="diag-panel" id="probe-panel">';
   html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
   html += '<h3 style="margin:0">\ud83d\udd0d Probe</h3>';
   if (sessionId) {
@@ -756,6 +773,13 @@ function renderProbePanel(report, sessionId) {
   }
   html += '</div>';
   html += '<div class="card">';
+
+  // Overall assessment at top
+  if (report.overall_assessment) {
+    html += '<div style="margin-bottom:14px;padding:10px 14px;background:rgba(68,138,255,0.08);border-left:3px solid var(--blue);border-radius:4px;font-size:0.88rem;line-height:1.5;color:var(--text)">';
+    html += '<b style="color:var(--blue)">AI Summary:</b> ' + escHtml(report.overall_assessment);
+    html += '</div>';
+  }
 
   if (allFindings.length === 0) {
     html += '<div style="text-align:center;padding:16px;color:var(--green)">\u2713 No findings</div>';
@@ -791,11 +815,6 @@ function renderProbePanel(report, sessionId) {
     }
   }
 
-  if (report.overall_assessment) {
-    html += '<div style="margin-top:10px;padding:10px;background:rgba(255,255,255,0.03);border-radius:4px;font-size:0.85rem;color:var(--text2)">';
-    html += '<b>Overall:</b> ' + escHtml(report.overall_assessment);
-    html += '</div>';
-  }
   if (report.parse_error) {
     html += '<div style="margin-top:10px;padding:10px;background:rgba(255,23,68,0.1);border-radius:4px;font-size:0.82rem;color:var(--red)">';
     html += 'Parse error: LLM output could not be parsed as JSON. Raw output preserved.';

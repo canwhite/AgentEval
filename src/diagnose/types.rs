@@ -6,6 +6,8 @@ pub struct DiagnoseReport {
     pub diagnosed_at: String,
     pub summary: DiagnoseSummary,
     pub issues: Vec<DiagnoseIssue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

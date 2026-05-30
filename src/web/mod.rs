@@ -236,7 +236,8 @@ pub async fn diagnose_session(
         return Err((StatusCode::BAD_REQUEST, "invalid session_id".into()));
     }
 
-    let report = diagnose::run(&session_id, &state.log_dir)
+    let report = diagnose::run(&session_id, &state.log_dir, &state.grader_config)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(serde_json::to_value(&report).unwrap_or_default()))
